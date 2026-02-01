@@ -12,7 +12,7 @@ const CONFIG = {
   clientSecret: 'kSmqreRr0qwBWJgbf5Y-PjSU',
   redirectPort: 8089,
   scope: 'https://mail.google.com/',
-  tokensFile: path.join(__dirname, 'tokens.json'),
+  tokensFile: path.join(__dirname, '..', 'tokens.json'),
 }
 
 function createOAuth2Client(): OAuth2Client {
