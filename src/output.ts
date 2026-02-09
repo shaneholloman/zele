@@ -105,21 +105,21 @@ export function printTable({ head, rows, colWidths, colAligns }: TableOptions): 
       compact: false,
     },
     chars: {
-      top: pc.dim('─'),
-      'top-mid': pc.dim('┬'),
-      'top-left': pc.dim('┌'),
-      'top-right': pc.dim('┐'),
-      bottom: pc.dim('─'),
-      'bottom-mid': pc.dim('┴'),
-      'bottom-left': pc.dim('└'),
-      'bottom-right': pc.dim('┘'),
-      left: pc.dim('│'),
-      'left-mid': pc.dim('├'),
-      mid: pc.dim('─'),
-      'mid-mid': pc.dim('┼'),
-      right: pc.dim('│'),
-      'right-mid': pc.dim('┤'),
-      middle: pc.dim('│'),
+      top: pc.gray('─'),
+      'top-mid': pc.gray('┬'),
+      'top-left': pc.gray('┌'),
+      'top-right': pc.gray('┐'),
+      bottom: pc.gray('─'),
+      'bottom-mid': pc.gray('┴'),
+      'bottom-left': pc.gray('└'),
+      'bottom-right': pc.gray('┘'),
+      left: pc.gray('│'),
+      'left-mid': pc.gray('├'),
+      mid: pc.gray('─'),
+      'mid-mid': pc.gray('┼'),
+      right: pc.gray('│'),
+      'right-mid': pc.gray('┤'),
+      middle: pc.gray('│'),
     },
   })
 
@@ -182,6 +182,8 @@ export function formatFlags(item: { unread?: boolean; starred?: boolean }): stri
   const parts: string[] = []
   if (item.starred) parts.push(pc.yellow('★'))
   if (item.unread) parts.push(pc.blue('●'))
+  // Show dim dot for read, non-starred threads so the column is never blank
+  if (parts.length === 0) parts.push(pc.dim('·'))
   return parts.join(' ')
 }
 

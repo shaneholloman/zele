@@ -82,7 +82,7 @@ export function registerMailCommands(cli: Goke) {
       }
 
       out.printTable({
-        head: ['', 'From', 'Subject', 'Date', 'Msgs'],
+        head: ['!', 'From', 'Subject', 'Date', 'Msgs'],
         rows: result.threads.map((t) => [
           out.formatFlags(t),
           out.truncate(out.formatSender(t.from), 25),
@@ -131,7 +131,7 @@ export function registerMailCommands(cli: Goke) {
       }
 
       out.printTable({
-        head: ['', 'From', 'Subject', 'Date', 'Msgs'],
+        head: ['!', 'From', 'Subject', 'Date', 'Msgs'],
         rows: result.threads.map((t) => [
           out.formatFlags(t),
           out.truncate(out.formatSender(t.from), 25),
