@@ -7,9 +7,9 @@
     <br/>
 </div>
 
-Multi-account Gmail and Google Calendar client with OAuth2 auth, SQLite cache, and YAML output.
-
 ## Install
+
+Multi-account Gmail and Google Calendar client with OAuth2 auth, SQLite cache, and YAML output.
 
 ```bash
 npm install -g zele
