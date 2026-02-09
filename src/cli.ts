@@ -13,6 +13,7 @@ import { registerDraftCommands } from './commands/draft.js'
 import { registerLabelCommands } from './commands/label.js'
 import { registerAttachmentCommands } from './commands/attachment.js'
 import { registerProfileCommands } from './commands/profile.js'
+import { registerCalendarCommands } from './commands/calendar.js'
 
 const cli = goke('zele')
 
@@ -36,6 +37,7 @@ registerDraftCommands(cli)
 registerLabelCommands(cli)
 registerAttachmentCommands(cli)
 registerProfileCommands(cli)
+registerCalendarCommands(cli)
 
 // ---------------------------------------------------------------------------
 // Help & version
