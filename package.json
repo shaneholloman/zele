@@ -2,6 +2,7 @@
   "name": "gmail-oauth",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -11,11 +12,21 @@
   "license": "ISC",
   "packageManager": "pnpm@10.18.1",
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "email-addresses": "^5.0.0",
     "google-auth-library": "^10.5.0",
-    "googleapis": "^171.0.0"
+    "googleapis": "^171.0.0",
+    "mimetext": "^3.0.28"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/email-addresses": "^3.0.0",
     "@types/node": "^25.2.0",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

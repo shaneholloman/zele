@@ -7,7 +7,7 @@ import { google } from 'googleapis'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-const CONFIG = {
+export const CONFIG = {
   clientId: '406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com',
   clientSecret: 'kSmqreRr0qwBWJgbf5Y-PjSU',
   redirectPort: 8089,
@@ -15,7 +15,7 @@ const CONFIG = {
   tokensFile: path.join(__dirname, '..', 'tokens.json'),
 }
 
-function createOAuth2Client(): OAuth2Client {
+export function createOAuth2Client(): OAuth2Client {
   return new OAuth2Client({
     clientId: CONFIG.clientId,
     clientSecret: CONFIG.clientSecret,
@@ -81,7 +81,7 @@ function loadTokens(): object | null {
   return null
 }
 
-async function authenticate(): Promise<OAuth2Client> {
+export async function authenticate(): Promise<OAuth2Client> {
   const oauth2Client = createOAuth2Client()
 
   const existingTokens = loadTokens()
@@ -161,4 +161,8 @@ async function main(): Promise<void> {
   }
 }
 
-main()
+// Only run main() when executed directly, not when imported as a module
+const isDirectRun = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'))
+if (isDirectRun) {
+  main()
+}
