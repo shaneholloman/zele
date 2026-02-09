@@ -12,6 +12,7 @@ import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail'
 import type { OAuth2Client } from 'google-auth-library'
 import { createMimeMessage } from 'mimetext'
 import { parseFrom, parseAddressList } from './email-utils.js'
+import { withRetry, mapConcurrent } from './api-utils.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,8 +106,6 @@ const SYSTEM_LABEL_IDS = new Set([
   'MUTED',
 ])
 
-const MAX_CONCURRENCY = 10
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -119,61 +118,6 @@ function decodeBase64Url(encoded: string) {
 function encodeBase64Url(data: string | Buffer) {
   const buf = typeof data === 'string' ? Buffer.from(data) : data
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-/** Run promises with bounded concurrency */
-async function mapConcurrent<T, R>(
-  items: T[],
-  fn: (item: T) => Promise<R>,
-  concurrency = MAX_CONCURRENCY,
-): Promise<R[]> {
-  const results: R[] = []
-  let index = 0
-
-  async function worker() {
-    while (index < items.length) {
-      const i = index++
-      results[i] = await fn(items[i]!)
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  await Promise.all(workers)
-  return results
-}
-
-/** Simple retry for rate limit errors (429 and 403 quota errors).
- *  Matches Zero's gmail-rate-limit.ts schedule: up to 10 attempts, 60s base delay. */
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 10, delayMs = 60000): Promise<T> {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn()
-    } catch (err: any) {
-      if (!isRateLimitError(err) || attempt === maxAttempts) throw err
-      const wait = delayMs * Math.pow(2, attempt - 1)
-      await new Promise((r) => setTimeout(r, wait))
-    }
-  }
-  throw new Error('unreachable')
-}
-
-function isRateLimitError(err: any): boolean {
-  const status = err?.code ?? err?.status ?? err?.response?.status
-  if (status === 429) return true
-  if (status === 403) {
-    const errors = err?.errors ?? err?.response?.data?.error?.errors ?? []
-    return errors.some((e: any) =>
-      [
-        'userRateLimitExceeded',
-        'rateLimitExceeded',
-        'quotaExceeded',
-        'dailyLimitExceeded',
-        'limitExceeded',
-        'backendError',
-      ].includes(e.reason),
-    )
-  }
-  return false
 }
 
 // ---------------------------------------------------------------------------
