@@ -12,6 +12,10 @@ import crypto from 'node:crypto'
 const DEFAULT_DB_DIR = path.join(os.homedir(), '.gtui')
 const DEFAULT_DB_PATH = path.join(DEFAULT_DB_DIR, 'cache.db')
 
+// Row shapes for typed .prepare() queries
+interface CacheRow { value: string; ttl_ms: number; created_at: number }
+interface SyncRow { value: string }
+
 // TTL constants in milliseconds
 export const TTL = {
   THREAD_LIST: 5 * 60 * 1000, // 5 minutes
@@ -67,17 +71,17 @@ export class GmailCache {
     return `${prefix}:${hash}`
   }
 
-  private get<T>(key: string): T | null {
+  private get<T>(key: string): T | undefined {
     const row = this.db
-      .prepare('SELECT value, ttl_ms, created_at FROM cache WHERE key = ?')
-      .get(key) as { value: string; ttl_ms: number; created_at: number } | undefined
+      .prepare<[string], CacheRow>('SELECT value, ttl_ms, created_at FROM cache WHERE key = ?')
+      .get(key)
 
-    if (!row) return null
+    if (!row) return undefined
 
     const expired = row.created_at + row.ttl_ms < Date.now()
     if (expired) {
       this.db.prepare('DELETE FROM cache WHERE key = ?').run(key)
-      return null
+      return undefined
     }
 
     return JSON.parse(row.value) as T
@@ -107,14 +111,14 @@ export class GmailCache {
     this.set(key, data, TTL.THREAD_LIST)
   }
 
-  getCachedThreadList(params: {
+  getCachedThreadList<T = unknown>(params: {
     folder?: string
     query?: string
     labelIds?: string[]
     pageToken?: string
   }) {
     const key = this.cacheKey('thread-list', params)
-    return this.get(key)
+    return this.get<T>(key)
   }
 
   invalidateThreadLists() {
@@ -197,9 +201,9 @@ export class GmailCache {
 
   getLastHistoryId() {
     const row = this.db
-      .prepare('SELECT value FROM sync_state WHERE key = ?')
-      .get('history_id') as { value: string } | undefined
-    return row?.value ?? null
+      .prepare<[string], SyncRow>('SELECT value FROM sync_state WHERE key = ?')
+      .get('history_id')
+    return row?.value
   }
 
   setLastHistoryId(historyId: string) {

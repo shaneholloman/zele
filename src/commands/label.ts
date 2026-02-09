@@ -104,12 +104,12 @@ export function registerLabelCommands(cli: Goke) {
       const auth = await authenticate()
       const client = new GmailClient({ auth })
 
-      const color =
-        options.bgColor && options.textColor
+      const result = await client.createLabel({
+        name,
+        color: options.bgColor && options.textColor
           ? { backgroundColor: options.bgColor, textColor: options.textColor }
-          : undefined
-
-      const result = await client.createLabel({ name, color })
+          : undefined,
+      })
 
       // Invalidate cache
       const cache = new GmailCache()

@@ -41,7 +41,7 @@ turndown.addRule('strip-style', {
 turndown.addRule('images', {
   filter: 'img',
   replacement: (_content, node) => {
-    const alt = (node as HTMLElement).getAttribute('alt') ?? ''
+    const alt = node.getAttribute('alt') ?? ''
     return alt ? `[image: ${alt}]` : ''
   },
 })

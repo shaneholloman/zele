@@ -6,7 +6,7 @@ import type { Goke } from 'goke'
 import { z } from 'zod'
 import fs from 'node:fs'
 import { authenticate } from '../auth.js'
-import { GmailClient, type ThreadData } from '../gmail-client.js'
+import { GmailClient, type ThreadData, type ThreadListResult } from '../gmail-client.js'
 import { GmailCache } from '../gmail-cache.js'
 import * as out from '../output.js'
 import pc from 'picocolors'
@@ -58,7 +58,7 @@ export function registerMailCommands(cli: Goke) {
       }
 
       // Cache-first read
-      let result = cache?.getCachedThreadList(cacheParams) as Awaited<ReturnType<GmailClient['listThreads']>> | null
+      let result = cache?.getCachedThreadList<ThreadListResult>(cacheParams)
       if (!result) {
         result = await client.listThreads({
           folder,

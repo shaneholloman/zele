@@ -8,7 +8,7 @@ import readline from 'node:readline'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { OAuth2Client } from 'google-auth-library'
+import { OAuth2Client, type Credentials } from 'google-auth-library'
 import fkill from 'fkill'
 
 // ---------------------------------------------------------------------------
@@ -57,15 +57,15 @@ function ensureDir() {
   }
 }
 
-export function loadTokens(): object | null {
+export function loadTokens(): Credentials | undefined {
   if (fs.existsSync(TOKENS_FILE)) {
     const data = fs.readFileSync(TOKENS_FILE, 'utf-8')
     return JSON.parse(data)
   }
-  return null
+  return undefined
 }
 
-export function saveTokens(tokens: object): void {
+export function saveTokens(tokens: Credentials): void {
   ensureDir()
   fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2))
 }
@@ -240,12 +240,12 @@ export interface AuthStatus {
 }
 
 export function getAuthStatus(): AuthStatus {
-  const tokens = loadTokens() as Record<string, unknown> | null
+  const tokens = loadTokens()
   if (!tokens) {
     return { authenticated: false, tokensFile: TOKENS_FILE }
   }
 
-  const expiryDate = tokens.expiry_date as number | undefined
+  const expiryDate = tokens.expiry_date ?? undefined
   return {
     authenticated: true,
     expiresAt: expiryDate ? new Date(expiryDate) : undefined,

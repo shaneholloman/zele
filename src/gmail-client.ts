@@ -78,6 +78,12 @@ export interface ThreadListItem {
   messageCount: number
 }
 
+export interface ThreadListResult {
+  threads: ThreadListItem[]
+  nextPageToken: string | null
+  resultSizeEstimate: number
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -198,7 +204,7 @@ export class GmailClient {
     maxResults?: number
     labelIds?: string[]
     pageToken?: string
-  } = {}) {
+  } = {}): Promise<ThreadListResult> {
     const { q, resolvedLabelIds } = this.buildSearchParams(folder, query, labelIds)
 
     const res = await withRetry(() =>
