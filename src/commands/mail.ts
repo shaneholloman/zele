@@ -113,7 +113,7 @@ export function registerMailCommands(cli: Goke) {
   // =========================================================================
 
   cli
-    .command('mail search <query>', 'Search email threads')
+    .command('mail search <query>', 'Search email threads using Gmail query syntax (from:, to:, subject:, has:attachment, etc). See https://support.google.com/mail/answer/7190')
     .option('--max [max]', 'Max results (default: 20)')
     .option('--page <page>', 'Pagination token')
     .action(async (query, options) => {

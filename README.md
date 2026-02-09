@@ -39,6 +39,7 @@ zele mail read <thread-id>       # read a thread
 zele mail send                    # send an email
 zele mail reply <thread-id>      # reply to a thread
 zele mail forward <thread-id>    # forward a thread
+zele mail watch                   # watch for new emails (poll)
 ```
 
 ### Mail actions
@@ -54,6 +55,42 @@ zele mail unread-mark <thread-id>
 zele mail label <thread-id>
 zele mail trash-spam
 ```
+
+### Search query syntax
+
+`mail search` and `mail watch --query` use [Gmail search operators](https://support.google.com/mail/answer/7190). `mail search` sends the query server-side (full Gmail support), while `mail watch --query` evaluates a subset client-side.
+
+| Operator                         | Example               | Description                                |
+| -------------------------------- | --------------------- | ------------------------------------------ |
+| `from:`                          | `from:github`         | Messages from a sender                     |
+| `to:`                            | `to:me@example.com`   | Messages sent to a recipient               |
+| `cc:`                            | `cc:team@example.com` | Messages where recipient was CC'd          |
+| `subject:`                       | `subject:invoice`     | Messages with words in the subject         |
+| `label:`                         | `label:work`          | Messages with a specific label             |
+| `is:unread`                      | `is:unread`           | Unread messages                            |
+| `is:read`                        | `is:read`             | Read messages                              |
+| `is:starred`                     | `is:starred`          | Starred messages                           |
+| `has:attachment`                 | `has:attachment`      | Messages with attachments                  |
+| `in:`                            | `in:sent`             | Messages in a folder (search only)         |
+| `after:`                         | `after:2024/01/01`    | Messages after a date (search only)        |
+| `before:`                        | `before:2024/12/31`   | Messages before a date (search only)       |
+| `newer_than:`                    | `newer_than:7d`       | Messages newer than a period (search only) |
+| `older_than:`                    | `older_than:1m`       | Messages older than a period (search only) |
+| `filename:`                      | `filename:pdf`        | Attachment filename (search only)          |
+| `size:` / `larger:` / `smaller:` | `larger:5M`           | Filter by message size (search only)       |
+| `-` (negate)                     | `-from:noreply`       | Exclude matching messages                  |
+| `" "` (quotes)                   | `"exact phrase"`      | Match an exact phrase                      |
+| `OR`                             | `from:a OR from:b`    | Match either term (search only)            |
+| `{ }`                            | `{from:a from:b}`     | Group OR terms (search only)               |
+
+Combine multiple operators to narrow results:
+
+```bash
+zele mail search "from:github is:unread newer_than:7d"
+zele mail watch --query "from:github has:attachment"
+```
+
+Operators marked **(search only)** are handled server-side by Gmail and are only available in `mail search`, not `mail watch --query`.
 
 ### Drafts
 

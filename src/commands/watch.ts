@@ -34,7 +34,7 @@ export function registerWatchCommands(cli: Goke) {
     .command('mail watch', 'Watch for new emails (poll via History API)')
     .option('--interval [interval]', z.string().describe('Poll interval in seconds (default: 15)'))
     .option('--folder [folder]', z.string().describe('Folder to watch (default: inbox)'))
-    .option('--query [query]', z.string().describe('Gmail search filter for displayed messages'))
+    .option('--query [query]', z.string().describe('Filter messages client-side using Gmail search operators (from:, to:, subject:, is:unread, has:attachment, etc). See https://support.google.com/mail/answer/7190'))
     .option('--once', z.boolean().describe('Print changes once and exit (no loop)'))
     .action(async (options) => {
       const interval = options.interval ? Number(options.interval) : 15
@@ -192,7 +192,7 @@ async function pollAccount(
     }
   })
 
-  return hydrated.filter((item): item is Record<string, unknown> => item !== null)
+  return hydrated.filter((item) => item !== null)
 }
 
 // ---------------------------------------------------------------------------
@@ -210,11 +210,99 @@ function isHistoryExpired(err: any): boolean {
   return false
 }
 
-function matchesQuery(msg: { subject: string; from: { name?: string; email: string } }, query: string): boolean {
-  const q = query.toLowerCase()
-  const subject = msg.subject.toLowerCase()
-  const from = `${msg.from.name ?? ''} ${msg.from.email}`.toLowerCase()
-  return subject.includes(q) || from.includes(q)
+// ---------------------------------------------------------------------------
+// Client-side Gmail query matching
+// ---------------------------------------------------------------------------
+// The History API doesn't support server-side query filtering, so we parse
+// common Gmail search operators and match against message metadata.
+// Supported operators: from:, to:, cc:, subject:, is:unread, is:starred,
+// has:attachment, label:, and plain text (matches subject + from).
+// Multiple terms are AND-ed together. Quoted phrases are supported.
+// See https://support.google.com/mail/answer/7190 for the full Gmail spec.
+// ---------------------------------------------------------------------------
+
+interface MatchableMessage {
+  subject: string
+  from: { name?: string; email: string }
+  to: Array<{ name?: string; email: string }>
+  cc: Array<{ name?: string; email: string }> | null
+  labelIds: string[]
+  unread: boolean
+  starred: boolean
+  attachments: Array<{ filename: string }>
+}
+
+function matchesQuery(msg: MatchableMessage, query: string): boolean {
+  const terms = parseQueryTerms(query)
+  return terms.every((term) => matchesTerm(msg, term))
+}
+
+interface QueryTerm {
+  operator: string | null // null = plain text, otherwise from/to/cc/subject/is/has/label
+  value: string
+  negated: boolean
+}
+
+function parseQueryTerms(query: string): QueryTerm[] {
+  const terms: QueryTerm[] = []
+  // Match: optional -, optional operator:, then either "quoted phrase" or non-space word
+  const regex = /(-?)(?:(from|to|cc|subject|is|has|label):)?(?:"([^"]*)"|([\S]+))/gi
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(query)) !== null) {
+    const negated = match[1] === '-'
+    const operator = match[2]?.toLowerCase() ?? null
+    const value = (match[3] ?? match[4] ?? '').toLowerCase()
+    if (value) terms.push({ operator, value, negated })
+  }
+
+  return terms
+}
+
+function senderMatches(sender: { name?: string; email: string }, value: string): boolean {
+  const full = `${sender.name ?? ''} ${sender.email}`.toLowerCase()
+  return full.includes(value)
+}
+
+function matchesTerm(msg: MatchableMessage, term: QueryTerm): boolean {
+  let result: boolean
+
+  switch (term.operator) {
+    case 'from':
+      result = senderMatches(msg.from, term.value)
+      break
+    case 'to':
+      result = msg.to.some((r) => senderMatches(r, term.value))
+      break
+    case 'cc':
+      result = (msg.cc ?? []).some((r) => senderMatches(r, term.value))
+      break
+    case 'subject':
+      result = msg.subject.toLowerCase().includes(term.value)
+      break
+    case 'is':
+      if (term.value === 'unread') result = msg.unread
+      else if (term.value === 'read') result = !msg.unread
+      else if (term.value === 'starred') result = msg.starred
+      else result = false
+      break
+    case 'has':
+      if (term.value === 'attachment') result = msg.attachments.length > 0
+      else result = false
+      break
+    case 'label':
+      result = msg.labelIds.some((l) => l.toLowerCase() === term.value || l.toLowerCase().replace('/', '-') === term.value)
+      break
+    default: {
+      // Plain text: match against subject + from
+      const subject = msg.subject.toLowerCase()
+      const from = `${msg.from.name ?? ''} ${msg.from.email}`.toLowerCase()
+      result = subject.includes(term.value) || from.includes(term.value)
+      break
+    }
+  }
+
+  return term.negated ? !result : result
 }
 
 function sleep(ms: number): Promise<void> {
