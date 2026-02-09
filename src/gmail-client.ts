@@ -136,8 +136,9 @@ async function mapConcurrent<T, R>(
   return results
 }
 
-/** Simple retry for rate limit errors (429 and 403 quota errors) */
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 2000): Promise<T> {
+/** Simple retry for rate limit errors (429 and 403 quota errors).
+ *  Matches Zero's gmail-rate-limit.ts schedule: up to 10 attempts, 60s base delay. */
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 10, delayMs = 60000): Promise<T> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await fn()
@@ -162,6 +163,7 @@ function isRateLimitError(err: any): boolean {
         'quotaExceeded',
         'dailyLimitExceeded',
         'limitExceeded',
+        'backendError',
       ].includes(e.reason),
     )
   }
@@ -768,7 +770,18 @@ export class GmailClient {
   // =========================================================================
 
   async getLabelCounts() {
-    const labels = await this.listLabels()
+    // Fetch label counts and archive count concurrently
+    const [labels, archiveRes] = await Promise.all([
+      this.listLabels(),
+      withRetry(() =>
+        this.gmail.users.threads.list({
+          userId: 'me',
+          q: 'in:archive',
+          maxResults: 1,
+        }),
+      ).catch(() => null),
+    ])
+
     const counts = await mapConcurrent(labels, async (label) => {
       if (!label.id) return null
       try {
@@ -789,7 +802,17 @@ export class GmailClient {
       }
     })
 
-    return counts.filter((c): c is NonNullable<typeof c> => c !== null)
+    const result = counts.filter((c): c is NonNullable<typeof c> => c !== null)
+
+    // Add archive count (same as Zero's count() method)
+    if (archiveRes) {
+      result.push({
+        label: 'archive',
+        count: Number(archiveRes.data.resultSizeEstimate ?? 0),
+      })
+    }
+
+    return result
   }
 
   // =========================================================================
@@ -1129,7 +1152,15 @@ export class GmailClient {
 
     for (const part of parts) {
       if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
-        results.push(part)
+        // Filter out inline CID images (same logic as Zero's findAttachments)
+        const disposition =
+          part.headers?.find((h) => h.name?.toLowerCase() === 'content-disposition')?.value ?? ''
+        const isInline = disposition.toLowerCase().includes('inline')
+        const hasContentId = part.headers?.some((h) => h.name?.toLowerCase() === 'content-id')
+
+        if (!isInline || !hasContentId) {
+          results.push(part)
+        }
       }
       if (part.parts) {
         results.push(...this.findAttachmentParts(part.parts))
