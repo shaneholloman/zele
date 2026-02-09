@@ -1,6 +1,11 @@
-# zele
-
-Gmail CLI — manage email from your terminal.
+<div align='center'>
+    <br/>
+    <br/>
+    <h3>zele</h3>
+    <p>Gmail CLI to manage emails & calendar from your terminal. For you and your agents</p>
+    <br/>
+    <br/>
+</div>
 
 Multi-account Gmail and Google Calendar client with OAuth2 auth, SQLite cache, and YAML output.
 
