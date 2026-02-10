@@ -26,9 +26,9 @@ import {
   showFailureToast,
 } from 'termcast'
 import { useCachedPromise } from '@raycast/utils'
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 
-import { getClients, getClient, listAccounts } from './auth.js'
+import { getClients, getClient, listAccounts, login } from './auth.js'
 import type { GmailClient, ThreadListItem, ThreadData, ParsedMessage, Sender } from './gmail-client.js'
 import { AuthError, ApiError, isTruthy } from './api-utils.js'
 import { renderEmailBody, replyParser, formatDate, formatSender } from './output.js'
@@ -112,10 +112,12 @@ function AccountDropdown({
   accounts,
   value,
   onChange,
+  onAdded,
 }: {
   accounts: { email: string; appId: string }[]
   value: string
   onChange: (value: string) => void
+  onAdded?: (email: string) => void | Promise<void>
 }) {
   const { push } = useNavigation()
 
@@ -125,11 +127,11 @@ function AccountDropdown({
       value={value}
       onChange={(newValue) => {
         if (newValue === ADD_ACCOUNT) {
-          push(<AddAccountInfo />)
+          push(<AddAccount onAdded={onAdded} />)
           return
         }
         if (newValue === MANAGE_ACCOUNTS) {
-          push(<ManageAccounts />)
+          push(<ManageAccounts onAdded={onAdded} />)
           return
         }
         onChange(newValue)
@@ -155,23 +157,61 @@ function AccountDropdown({
 }
 
 // ---------------------------------------------------------------------------
-// Add Account (instructions)
+// Add Account (interactive login)
 // ---------------------------------------------------------------------------
 
-function AddAccountInfo() {
+function AddAccount({
+  onAdded,
+}: {
+  onAdded?: (email: string) => void | Promise<void>
+}) {
+  const { pop } = useNavigation()
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [didAutoStart, setDidAutoStart] = useState(false)
+
+  const handleLogin = async () => {
+    if (isLoggingIn) return
+
+    setIsLoggingIn(true)
+    const result = await login(undefined, {
+      openBrowser: true,
+      allowManualCodeEntry: false,
+      showInstructions: false,
+    })
+    setIsLoggingIn(false)
+
+    if (result instanceof Error) {
+      await showFailureToast(result, { title: 'Failed to add account' })
+      return
+    }
+
+    await onAdded?.(result.email)
+    await showToast({ style: Toast.Style.Success, title: `Added ${result.email}` })
+    pop()
+  }
+
+  useEffect(() => {
+    if (didAutoStart) return
+    setDidAutoStart(true)
+    void handleLogin()
+  }, [didAutoStart])
+
   return (
     <Detail
       navigationTitle="Add Account"
       markdown={
         `# Add Account\n\n` +
-        `Run the following command in your terminal to add a new Google account:\n\n` +
-        '```\nzele login\n```\n\n' +
-        `This opens a browser for Google OAuth2 authorization. ` +
-        `Once complete, restart this extension to see the new account.`
+        `The browser opens automatically for Google sign-in.\n\n` +
+        `Complete login in the browser, then come back here. ` +
+        `This screen waits for the localhost callback and will finish automatically.`
       }
       actions={
         <ActionPanel>
-          <Action.CopyToClipboard title="Copy Command" content="zele login" />
+          <Action
+            title={isLoggingIn ? 'Waiting for Login...' : 'Open Browser Again'}
+            icon={Icon.Globe}
+            onAction={handleLogin}
+          />
         </ActionPanel>
       }
     />
@@ -182,8 +222,17 @@ function AddAccountInfo() {
 // Manage Accounts
 // ---------------------------------------------------------------------------
 
-function ManageAccounts() {
+function ManageAccounts({
+  onAdded,
+}: {
+  onAdded?: (email: string) => void | Promise<void>
+}) {
   const accounts = useAccounts()
+
+  const handleAdded = async (email: string) => {
+    await accounts.revalidate()
+    await onAdded?.(email)
+  }
 
   return (
     <List navigationTitle="Manage Accounts" isLoading={accounts.isLoading}>
@@ -206,7 +255,7 @@ function ManageAccounts() {
         icon={Icon.Plus}
         actions={
           <ActionPanel>
-            <Action.Push title="Add Account" target={<AddAccountInfo />} />
+            <Action.Push title="Add Account" target={<AddAccount onAdded={handleAdded} />} />
           </ActionPanel>
         }
       />
@@ -465,7 +514,6 @@ export default function Command() {
   const [searchText, setSearchText] = useState('')
   const [isShowingDetail, setIsShowingDetail] = useState(true)
   const [selectedThreads, setSelectedThreads] = useState<string[]>([])
-  const { push } = useNavigation()
 
   const accounts = useAccounts()
   const accountList = accounts.data ?? []
@@ -566,6 +614,15 @@ export default function Command() {
     { keepPreviousData: true },
   )
 
+  const handleAccountAdded = useCallback(
+    async (email: string) => {
+      await accounts.revalidate()
+      setSelectedAccount(email)
+      await revalidate()
+    },
+    [accounts, revalidate],
+  )
+
   const allThreads = threads ?? []
 
   // Group threads into sections
@@ -638,7 +695,12 @@ export default function Command() {
       pagination={pagination ? { ...pagination, pageSize: PAGE_SIZE } : undefined}
       searchBarAccessory={
         accountList.length > 0 ? (
-          <AccountDropdown accounts={accountList} value={selectedAccount} onChange={setSelectedAccount} />
+          <AccountDropdown
+            accounts={accountList}
+            value={selectedAccount}
+            onChange={setSelectedAccount}
+            onAdded={handleAccountAdded}
+          />
         ) : undefined
       }
     >

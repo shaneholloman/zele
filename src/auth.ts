@@ -8,6 +8,7 @@
 
 import http from 'node:http'
 import readline from 'node:readline'
+import { spawn } from 'node:child_process'
 import { OAuth2Client, type Credentials } from 'google-auth-library'
 import fkill from 'fkill'
 import pc from 'picocolors'
@@ -145,7 +146,41 @@ function extractCodeFromInput(input: string): string | null {
   return null
 }
 
-async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client, port: number): Promise<string> {
+interface BrowserAuthOptions {
+  openBrowser?: boolean
+  allowManualCodeEntry?: boolean
+  showInstructions?: boolean
+}
+
+function openUrlInBrowser(url: string): Error | void {
+  const command = process.platform === 'darwin'
+    ? { bin: 'open', args: [url] }
+    : process.platform === 'win32'
+      ? { bin: 'cmd', args: ['/c', 'start', '', url] }
+      : { bin: 'xdg-open', args: [url] }
+
+  const child = errore.tryFn(() =>
+    spawn(command.bin, command.args, {
+      detached: true,
+      stdio: 'ignore',
+    }),
+  )
+  if (child instanceof Error) {
+    return new Error(`Failed to open browser with ${command.bin}`, { cause: child })
+  }
+
+  child.unref()
+}
+
+async function getAuthCodeFromBrowser(
+  oauth2Client: OAuth2Client,
+  port: number,
+  options?: BrowserAuthOptions,
+): Promise<string | Error> {
+  const openBrowser = options?.openBrowser ?? true
+  const allowManualCodeEntry = options?.allowManualCodeEntry ?? true
+  const showInstructions = options?.showInstructions ?? true
+
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
@@ -157,13 +192,23 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client, port: number):
     catch: (err) => new Error(String(err), { cause: err }),
   })
 
-  console.error('\n' + pc.bold('1.') + ' Open this URL to authorize:\n')
-  console.error('   ' + pc.cyan(pc.underline(authUrl)) + '\n')
-  console.error(pc.bold('2.') + ' If running locally, the browser will redirect automatically.')
-  console.error(pc.dim('   If running remotely, the redirect page won\'t load — that\'s fine.'))
-  console.error(pc.dim('   Just copy the URL from your browser\'s address bar and paste it below.') + '\n')
+  if (showInstructions) {
+    console.error('\n' + pc.bold('1.') + ' Open this URL to authorize:\n')
+    console.error('   ' + pc.cyan(pc.underline(authUrl)) + '\n')
+    console.error(pc.bold('2.') + ' If running locally, the browser will redirect automatically.')
+    console.error(pc.dim('   If running remotely, the redirect page won\'t load — that\'s fine.'))
+    console.error(pc.dim('   Just copy the URL from your browser\'s address bar and paste it below.') + '\n')
+  }
 
-  return new Promise((resolve, reject) => {
+  if (openBrowser) {
+    const openResult = openUrlInBrowser(authUrl)
+    if (openResult instanceof Error && showInstructions) {
+      console.error(pc.yellow(`Could not auto-open browser: ${openResult.message}`))
+      console.error(pc.dim('Open the URL above manually.'))
+    }
+  }
+
+  return new Promise((resolve) => {
     let resolved = false
     let server: http.Server | null = null
     let rl: readline.Interface | null = null
@@ -191,7 +236,7 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client, port: number):
       resolved = true
       closeServer()
       rl?.close()
-      reject(err)
+      resolve(err)
     }
 
     server = http.createServer((req, res) => {
@@ -218,8 +263,11 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client, port: number):
     })
 
     server.listen(port)
+    server.on('error', (err) => {
+      fail(new Error(`Failed to start local auth callback server on port ${port}`, { cause: err }))
+    })
 
-    if (process.stdin.isTTY) {
+    if (allowManualCodeEntry && process.stdin.isTTY) {
       rl = readline.createInterface({ input: process.stdin, output: process.stderr })
       rl.question(pc.dim('Paste redirect URL here (or wait for auto-redirect): '), (answer) => {
         const code = extractCodeFromInput(answer)
@@ -240,30 +288,56 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client, port: number):
 
 /**
  * Run the full browser OAuth flow and save the account to the DB.
- * Returns the account identifier and an authenticated GmailClient.
+ * Returns either a successful login payload or an Error value.
  */
-export async function login(appId?: string): Promise<{ email: string; appId: string; client: GmailClient }> {
+export async function login(
+  appId?: string,
+  options?: BrowserAuthOptions,
+): Promise<{ email: string; appId: string; client: GmailClient } | Error> {
   const resolved = resolveOAuthClient(appId)
   const oauth2Client = createOAuth2Client(appId)
 
-  const code = await getAuthCodeFromBrowser(oauth2Client, resolved.redirectPort)
-  console.error(pc.dim('Got authorization code, exchanging for tokens...'))
+  const code = await getAuthCodeFromBrowser(oauth2Client, resolved.redirectPort, options)
+  if (code instanceof Error) return code
 
-  const { tokens } = await oauth2Client.getToken(code)
+  if (options?.showInstructions ?? true) {
+    console.error(pc.dim('Got authorization code, exchanging for tokens...'))
+  }
+
+  const tokenResponse = await errore.tryAsync({
+    try: () => oauth2Client.getToken(code),
+    catch: (err) => new Error('Failed to exchange authorization code for tokens', { cause: err }),
+  })
+  if (tokenResponse instanceof Error) return tokenResponse
+
+  const { tokens } = tokenResponse
   oauth2Client.setCredentials(tokens)
 
   // Discover email
   const client = new GmailClient({ auth: oauth2Client })
-  const profile = errore.unwrap(await client.getProfile(), 'Login: failed to get profile')
+  const profile = await client.getProfile()
+  if (profile instanceof Error) return profile
   const email = profile.emailAddress
 
   // Upsert account in DB
   const prisma = await getPrisma()
-  await prisma.account.upsert({
-    where: { email_appId: { email, appId: resolved.clientId } },
-    create: { email, appId: resolved.clientId, accountStatus: 'active', tokens: JSON.stringify(tokens), createdAt: new Date(), updatedAt: new Date() },
-    update: { tokens: JSON.stringify(tokens), updatedAt: new Date() },
+  const upsertResult = await errore.tryAsync({
+    try: () =>
+      prisma.account.upsert({
+        where: { email_appId: { email, appId: resolved.clientId } },
+        create: {
+          email,
+          appId: resolved.clientId,
+          accountStatus: 'active',
+          tokens: JSON.stringify(tokens),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        update: { tokens: JSON.stringify(tokens), updatedAt: new Date() },
+      }),
+    catch: (err) => new Error(`Failed to save account ${email}`, { cause: err }),
   })
+  if (upsertResult instanceof Error) return upsertResult
 
   return { email, appId: resolved.clientId, client }
 }
