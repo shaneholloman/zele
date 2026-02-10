@@ -8,7 +8,9 @@ import { z } from 'zod'
 import fs from 'node:fs'
 import { getClients, getClient } from '../auth.js'
 import type { ThreadListResult } from '../gmail-client.js'
+import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 import pc from 'picocolors'
 
 // ---------------------------------------------------------------------------
@@ -36,8 +38,8 @@ export function registerMailCommands(cli: Goke) {
         process.exit(1)
       }
 
-      // Fetch from all accounts concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Fetch from all accounts concurrently
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
           const result = await client.listThreads({
             folder,
@@ -45,19 +47,16 @@ export function registerMailCommands(cli: Goke) {
             labelIds: options.label ? [options.label] : undefined,
             pageToken: options.page,
           })
+          if (result instanceof Error) return result
           return { email, result }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; result: ThreadListResult }> => {
-          if (r.status === 'rejected') {
-            out.error(`Failed to fetch: ${r.reason}`)
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       // Merge threads from all accounts, sorted by date descending, capped at max
       const merged = allResults
@@ -104,27 +103,24 @@ export function registerMailCommands(cli: Goke) {
         process.exit(1)
       }
 
-      // Search all accounts concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Search all accounts concurrently
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
           const result = await client.listThreads({
             query,
             maxResults: max,
             pageToken: options.page,
           })
+          if (result instanceof Error) return result
           return { email, result }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; result: ThreadListResult }> => {
-          if (r.status === 'rejected') {
-            out.error(`Failed to search: ${r.reason}`)
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to search: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       const merged = allResults
         .flatMap(({ email, result }) =>
@@ -170,6 +166,7 @@ export function registerMailCommands(cli: Goke) {
           return
         }
         const rawMsg = await client.getRawMessage({ messageId: thread.messages[0]!.id })
+        if (rawMsg instanceof Error) handleCommandError(rawMsg)
         process.stdout.write(rawMsg + '\n')
         return
       }
@@ -313,6 +310,7 @@ export function registerMailCommands(cli: Goke) {
         cc,
         fromEmail: options.from,
       })
+      if (result instanceof Error) handleCommandError(result)
 
       out.printYaml(result)
       out.success('Reply sent')
@@ -346,6 +344,7 @@ export function registerMailCommands(cli: Goke) {
         body: options.body,
         fromEmail: options.from,
       })
+      if (result instanceof Error) handleCommandError(result)
 
       out.printYaml(result)
       out.success(`Forwarded to ${options.to}`)

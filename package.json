@@ -27,6 +27,7 @@
     "@prisma/adapter-libsql": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "email-addresses": "^5.0.0",
+    "errore": "^0.11.0",
     "fkill": "^10.0.3",
     "goke": "^6.1.3",
     "google-auth-library": "^10.5.0",

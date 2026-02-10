@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { getClient } from '../auth.js'
 import type { GmailClient } from '../gmail-client.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 
 // ---------------------------------------------------------------------------
 // Helper: run a bulk action
@@ -15,7 +16,7 @@ async function bulkAction(
   threadIds: string[],
   actionName: string,
   accountFilter: string[] | undefined,
-  fn: (client: GmailClient, ids: string[]) => Promise<void>,
+  fn: (client: GmailClient, ids: string[]) => Promise<void | Error>,
 ) {
   if (threadIds.length === 0) {
     out.error('No thread IDs provided')
@@ -23,7 +24,8 @@ async function bulkAction(
   }
 
   const { client } = await getClient(accountFilter)
-  await fn(client, threadIds)
+  const result = await fn(client, threadIds)
+  if (result instanceof Error) handleCommandError(result)
 
   out.printYaml({ action: actionName, thread_ids: threadIds, success: true })
 }
@@ -101,6 +103,7 @@ export function registerMailActionCommands(cli: Goke) {
     .action(async (options) => {
       const { client } = await getClient(options.account)
       const result = await client.trashAllSpam()
+      if (result instanceof Error) handleCommandError(result)
 
       out.printYaml(result)
       out.success(`Trashed ${result.count} spam thread(s)`)

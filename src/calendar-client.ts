@@ -25,7 +25,21 @@ import {
   type IcsDateObject,
 } from 'ts-ics'
 import crypto from 'node:crypto'
+import * as errore from 'errore'
 import { getPrisma } from './db.js'
+import { AuthError, isAuthLikeError, ApiError, NotFoundError, ParseError, MissingDataError } from './api-utils.js'
+
+/** Boundary helper: wrap a tsdav/CalDAV call, converting auth-like errors to AuthError values.
+ *  Non-auth errors are wrapped in ApiError so they remain error values (no throwing).
+ *  Original error is preserved as `cause` for debugging. */
+function caldavBoundary<T>(email: string, fn: () => Promise<T>) {
+  return errore.tryAsync({
+    try: fn,
+    catch: (err) => isAuthLikeError(err)
+      ? new AuthError({ email, reason: String(err) })
+      : new ApiError({ reason: String(err), cause: err }),
+  })
+}
 
 // ---------------------------------------------------------------------------
 // Types (kept identical to previous API so commands layer is unchanged)
@@ -217,15 +231,13 @@ function icsEventToCalendarEvent(event: IcsEvent, calObj?: DAVCalendarObject): C
   }
 }
 
-/** Parse all events from a raw iCal data string using ts-ics */
-function parseICalData(data: string, calObj?: DAVCalendarObject): CalendarEvent[] {
-  try {
-    const calendar = convertIcsCalendar(undefined, data)
-    return (calendar.events ?? []).map((ev) => icsEventToCalendarEvent(ev, calObj))
-  } catch (err) {
-    console.error('[calendar] failed to parse iCal data:', err instanceof Error ? err.stack ?? err.message : err)
-    return []
-  }
+/** Parse all events from a raw iCal data string using ts-ics.
+ *  Boundary: convertIcsCalendar (ts-ics library) may throw on malformed iCal.
+ *  Returns ParseError on failure so callers can decide how to handle it. */
+function parseICalData(data: string, calObj?: DAVCalendarObject): ParseError | CalendarEvent[] {
+  const calendar = errore.tryFn(() => convertIcsCalendar(undefined, data))
+  if (calendar instanceof Error) return new ParseError({ what: 'iCal data', reason: calendar.message })
+  return (calendar.events ?? []).map((ev) => icsEventToCalendarEvent(ev, calObj))
 }
 
 /** Build an iCal string from event properties using ts-ics */
@@ -376,26 +388,30 @@ export class CalendarClient {
   // Internal: fetch DAVCalendar list (cached per instance)
   // =========================================================================
 
-  private async fetchDAVCalendars(): Promise<DAVCalendar[]> {
+  private async fetchDAVCalendars(): Promise<DAVCalendar[] | AuthError | ApiError> {
     if (this.calendarCache) return this.calendarCache
 
-    const calendars = await fetchCalendars({
-      account: {
-        serverUrl: GOOGLE_CALDAV_URL,
-        rootUrl: GOOGLE_CALDAV_URL,
-        accountType: 'caldav',
-        homeUrl: `${GOOGLE_CALDAV_URL}${this.email}/`,
-      },
-      headers: this.headers,
-    })
+    const calendars = await caldavBoundary(this.email, () =>
+      fetchCalendars({
+        account: {
+          serverUrl: GOOGLE_CALDAV_URL,
+          rootUrl: GOOGLE_CALDAV_URL,
+          accountType: 'caldav',
+          homeUrl: `${GOOGLE_CALDAV_URL}${this.email}/`,
+        },
+        headers: this.headers,
+      }),
+    )
+    if (calendars instanceof Error) return calendars
 
     this.calendarCache = calendars
     return calendars
   }
 
   /** Resolve a calendarId to a DAVCalendar. 'primary' maps to the user's email. */
-  private async resolveCalendar(calendarId: string): Promise<DAVCalendar> {
+  private async resolveCalendar(calendarId: string): Promise<DAVCalendar | AuthError | ApiError | NotFoundError> {
     const calendars = await this.fetchDAVCalendars()
+    if (calendars instanceof Error) return calendars
 
     // 'primary' = the user's own calendar (URL contains their email)
     const targetId = calendarId === 'primary' ? this.email : calendarId
@@ -407,7 +423,7 @@ export class CalendarClient {
     })
 
     if (!match) {
-      throw new Error(`Calendar not found: ${calendarId}. Available: ${calendars.map((c) => c.displayName || c.url).join(', ')}`)
+      return new NotFoundError({ resource: `calendar "${calendarId}". Available: ${calendars.map((c) => c.displayName || c.url).join(', ')}` })
     }
 
     return match
@@ -417,12 +433,13 @@ export class CalendarClient {
   // Calendar list
   // =========================================================================
 
-  async listCalendars(): Promise<CalendarListItem[]> {
+  async listCalendars(): Promise<CalendarListItem[] | AuthError | ApiError> {
     // Check cache
     const cached = await this.getCachedCalendarList()
     if (cached) return cached
 
     const calendars = await this.fetchDAVCalendars()
+    if (calendars instanceof Error) return calendars
 
     const result = calendars.map((cal) => {
       // Extract calendar ID from URL
@@ -456,23 +473,25 @@ export class CalendarClient {
   // Timezone
   // =========================================================================
 
-  async getTimezone(calendarId = 'primary'): Promise<string> {
+  async getTimezone(calendarId = 'primary'): Promise<string | AuthError | ApiError | NotFoundError> {
     if (this.timezoneCache[calendarId]) return this.timezoneCache[calendarId]!
 
-    try {
-      const cal = await this.resolveCalendar(calendarId)
-      const tz = extractTimezone(cal.timezone)
-      this.timezoneCache[calendarId] = tz
-      return tz
-    } catch (err) {
-      console.error('[calendar] failed to resolve timezone for', calendarId, '-', err instanceof Error ? err.stack ?? err.message : err)
+    const cal = await this.resolveCalendar(calendarId)
+    if (cal instanceof Error) return cal
+
+    // extractTimezone is a pure function (regex on string) — no try/catch needed.
+    // Fallback to calendar list metadata if the DAVCalendar has no timezone data.
+    let tz = extractTimezone(cal.timezone)
+    if (tz === 'UTC' && cal.timezone) {
+      // extractTimezone returned UTC as default — check calendar list for a better match
       const calendars = await this.listCalendars()
+      if (calendars instanceof Error) return calendars
       const target = calendarId === 'primary' ? this.email : calendarId
       const match = calendars.find((c) => c.id.toLowerCase() === target.toLowerCase())
-      const tz = match?.timezone || 'UTC'
-      this.timezoneCache[calendarId] = tz
-      return tz
+      if (match?.timezone && match.timezone !== 'UTC') tz = match.timezone
     }
+    this.timezoneCache[calendarId] = tz
+    return tz
   }
 
   // =========================================================================
@@ -493,11 +512,13 @@ export class CalendarClient {
     query?: string
     maxResults?: number
     pageToken?: string
-  } = {}): Promise<EventListResult> {
+  } = {}): Promise<EventListResult | AuthError | ApiError | NotFoundError> {
     // Always fresh: event lists are user-facing live data.
 
     const cal = await this.resolveCalendar(calendarId)
+    if (cal instanceof Error) return cal
     const tz = await this.getTimezone(calendarId)
+    if (tz instanceof Error) return tz
 
     const fetchOpts: Parameters<typeof fetchCalendarObjects>[0] = {
       calendar: cal,
@@ -509,12 +530,15 @@ export class CalendarClient {
       fetchOpts.timeRange = { start: timeMin, end: timeMax }
     }
 
-    const calObjects = await fetchCalendarObjects(fetchOpts)
+    const calObjects = await caldavBoundary(this.email, () => fetchCalendarObjects(fetchOpts))
+    if (calObjects instanceof Error) return calObjects
 
     let events: CalendarEvent[] = []
     for (const obj of calObjects) {
       if (!obj.data) continue
-      events.push(...parseICalData(obj.data, obj))
+      const parsed = parseICalData(obj.data, obj)
+      if (parsed instanceof ParseError) continue // skip unparseable calendar objects
+      events.push(...parsed)
     }
 
     if (query) {
@@ -543,23 +567,28 @@ export class CalendarClient {
   }: {
     calendarId?: string
     eventId: string
-  }): Promise<CalendarEvent> {
+  }): Promise<CalendarEvent | AuthError | ApiError | NotFoundError> {
     const cal = await this.resolveCalendar(calendarId)
+    if (cal instanceof Error) return cal
 
-    const calObjects = await fetchCalendarObjects({
-      calendar: cal,
-      headers: this.headers,
-      urlFilter: () => true,
-    })
+    const calObjects = await caldavBoundary(this.email, () =>
+      fetchCalendarObjects({
+        calendar: cal,
+        headers: this.headers,
+        urlFilter: () => true,
+      }),
+    )
+    if (calObjects instanceof Error) return calObjects
 
     for (const obj of calObjects) {
       if (!obj.data) continue
       const events = parseICalData(obj.data, obj)
+      if (events instanceof ParseError) continue // skip unparseable calendar objects
       const match = events.find((e) => e.id === eventId || e.uid === eventId)
       if (match) return match
     }
 
-    throw new Error(`Event not found: ${eventId}`)
+    return new NotFoundError({ resource: `event "${eventId}"` })
   }
 
   async createEvent({
@@ -592,8 +621,9 @@ export class CalendarClient {
     colorId?: string
     visibility?: string
     transparency?: string
-  }): Promise<CalendarEvent> {
+  }): Promise<CalendarEvent | AuthError | ApiError | NotFoundError | ParseError> {
     const cal = await this.resolveCalendar(calendarId)
+    if (cal instanceof Error) return cal
     const uid = generateUID()
 
     const iCalString = buildICalString({
@@ -612,18 +642,22 @@ export class CalendarClient {
 
     const filename = `${uid.split('@')[0]}.ics`
 
-    await createCalendarObject({
-      calendar: cal,
-      filename,
-      iCalString,
-      headers: this.headers,
-    })
+    const createResult = await caldavBoundary(this.email, () =>
+      createCalendarObject({
+        calendar: cal,
+        filename,
+        iCalString,
+        headers: this.headers,
+      }),
+    )
+    if (createResult instanceof Error) return createResult
 
     await this.invalidateCalendarEvents()
 
     const events = parseICalData(iCalString)
+    if (events instanceof ParseError) return events
     const event = events[0]
-    if (!event) throw new Error('Failed to parse created event')
+    if (!event) return new ParseError({ what: 'created event', reason: 'iCal round-trip produced no events' })
     event.url = `${cal.url}${filename}`
 
     return event
@@ -659,10 +693,11 @@ export class CalendarClient {
     colorId?: string
     visibility?: string
     transparency?: string
-  }): Promise<CalendarEvent> {
+  }): Promise<CalendarEvent | AuthError | ApiError | NotFoundError | MissingDataError | ParseError> {
     const existing = await this.getEvent({ calendarId, eventId })
+    if (existing instanceof Error) return existing
     if (!existing.url || !existing.etag) {
-      throw new Error(`Cannot update event: missing CalDAV URL or etag for event ${eventId}`)
+      return new MissingDataError({ what: 'CalDAV URL or etag', resource: `event ${eventId}` })
     }
 
     // Handle attendee add/remove
@@ -699,16 +734,20 @@ export class CalendarClient {
       organizer: { email: this.email },
     })
 
-    await updateCalendarObject({
-      calendarObject: { url: existing.url, data: iCalString, etag: existing.etag },
-      headers: this.headers,
-    })
+    const updateResult = await caldavBoundary(this.email, () =>
+      updateCalendarObject({
+        calendarObject: { url: existing.url!, data: iCalString, etag: existing.etag },
+        headers: this.headers,
+      }),
+    )
+    if (updateResult instanceof Error) return updateResult
 
     await this.invalidateCalendarEvents()
 
     const events = parseICalData(iCalString)
+    if (events instanceof ParseError) return events
     const event = events[0]
-    if (!event) throw new Error('Failed to parse updated event')
+    if (!event) return new ParseError({ what: 'updated event', reason: 'iCal round-trip produced no events' })
     event.url = existing.url
     event.etag = existing.etag
 
@@ -721,16 +760,20 @@ export class CalendarClient {
   }: {
     calendarId?: string
     eventId: string
-  }): Promise<void> {
+  }): Promise<void | AuthError | ApiError | NotFoundError | MissingDataError> {
     const existing = await this.getEvent({ calendarId, eventId })
+    if (existing instanceof Error) return existing
     if (!existing.url) {
-      throw new Error(`Cannot delete event: missing CalDAV URL for event ${eventId}`)
+      return new MissingDataError({ what: 'CalDAV URL', resource: `event ${eventId}` })
     }
 
-    await deleteCalendarObject({
-      calendarObject: { url: existing.url, etag: existing.etag },
-      headers: this.headers,
-    })
+    const deleteResult = await caldavBoundary(this.email, () =>
+      deleteCalendarObject({
+        calendarObject: { url: existing.url!, etag: existing.etag },
+        headers: this.headers,
+      }),
+    )
+    if (deleteResult instanceof Error) return deleteResult
 
     await this.invalidateCalendarEvents()
   }
@@ -745,10 +788,11 @@ export class CalendarClient {
     eventId: string
     status: 'accepted' | 'declined' | 'tentative'
     comment?: string
-  }): Promise<CalendarEvent> {
+  }): Promise<CalendarEvent | AuthError | ApiError | NotFoundError | MissingDataError | ParseError> {
     const existing = await this.getEvent({ calendarId, eventId })
+    if (existing instanceof Error) return existing
     if (!existing.url || !existing.etag) {
-      throw new Error(`Cannot respond to event: missing CalDAV URL or etag for event ${eventId}`)
+      return new MissingDataError({ what: 'CalDAV URL or etag', resource: `event ${eventId}` })
     }
 
     // Update our PARTSTAT in attendees
@@ -776,16 +820,20 @@ export class CalendarClient {
         : { email: this.email },
     })
 
-    await updateCalendarObject({
-      calendarObject: { url: existing.url, data: iCalString, etag: existing.etag },
-      headers: this.headers,
-    })
+    const respondResult = await caldavBoundary(this.email, () =>
+      updateCalendarObject({
+        calendarObject: { url: existing.url!, data: iCalString, etag: existing.etag },
+        headers: this.headers,
+      }),
+    )
+    if (respondResult instanceof Error) return respondResult
 
     await this.invalidateCalendarEvents()
 
     const events = parseICalData(iCalString)
+    if (events instanceof ParseError) return events
     const event = events[0]
-    if (!event) throw new Error('Failed to parse response event')
+    if (!event) return new ParseError({ what: 'response event', reason: 'iCal round-trip produced no events' })
     event.url = existing.url
 
     return event
@@ -803,23 +851,24 @@ export class CalendarClient {
     const results: FreeBusyResult[] = []
 
     for (const calId of calendarIds) {
-      try {
-        const { events } = await this.listEvents({
-          calendarId: calId,
-          timeMin,
-          timeMax,
-          maxResults: 200,
-        })
-
-        const busy: FreeBusyBlock[] = events
-          .filter((e) => e.transparency !== 'transparent' && !e.allDay)
-          .map((e) => ({ start: e.start, end: e.end }))
-
-        results.push({ calendar: calId, busy })
-      } catch (err) {
-        console.error('[calendar] freebusy failed for', calId, '-', err instanceof Error ? err.stack ?? err.message : err)
+      // listEvents returns errors as values — no try/catch needed.
+      // Errors (auth, not found) yield an empty busy list for that calendar.
+      const eventsResult = await this.listEvents({
+        calendarId: calId,
+        timeMin,
+        timeMax,
+        maxResults: 200,
+      })
+      if (eventsResult instanceof Error) {
         results.push({ calendar: calId, busy: [] })
+        continue
       }
+
+      const busy: FreeBusyBlock[] = eventsResult.events
+        .filter((e: CalendarEvent) => e.transparency !== 'transparent' && !e.allDay)
+        .map((e: CalendarEvent) => ({ start: e.start, end: e.end }))
+
+      results.push({ calendar: calId, busy })
     }
 
     return results

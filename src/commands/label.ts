@@ -6,6 +6,7 @@
 import type { Goke } from 'goke'
 import { z } from 'zod'
 import { getClients, getClient } from '../auth.js'
+import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
 
 export function registerLabelCommands(cli: Goke) {
@@ -18,23 +19,20 @@ export function registerLabelCommands(cli: Goke) {
     .action(async (options) => {
       const clients = await getClients(options.account)
 
-      // Fetch from all accounts concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Fetch from all accounts concurrently
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
-          const { parsed: labels } = await client.listLabels()
-          return { email, labels }
+          const labelsResult = await client.listLabels()
+          if (labelsResult instanceof Error) return labelsResult
+          return { email, labels: labelsResult.parsed }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; labels: ReturnType<typeof import('../gmail-client.js').GmailClient.parseRawLabels> }> => {
-          if (r.status === 'rejected') {
-            out.error(`Failed to fetch labels: ${r.reason}`)
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch labels: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       // Merge labels from all accounts
       const merged = allResults.flatMap(({ email, labels }) =>
@@ -146,23 +144,20 @@ export function registerLabelCommands(cli: Goke) {
     .action(async (options) => {
       const clients = await getClients(options.account)
 
-      // Fetch from all accounts concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Fetch from all accounts concurrently
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
-          const { parsed: counts } = await client.getLabelCounts()
-          return { email, counts }
+          const countsResult = await client.getLabelCounts()
+          if (countsResult instanceof Error) return countsResult
+          return { email, counts: countsResult.parsed }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; counts: Array<{ label: string; count: number }> }> => {
-          if (r.status === 'rejected') {
-            out.error(`Failed to fetch counts: ${r.reason}`)
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch counts: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       // Merge counts from all accounts
       const merged = allResults.flatMap(({ email, counts }) =>

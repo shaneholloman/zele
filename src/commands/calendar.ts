@@ -8,7 +8,9 @@ import { z } from 'zod'
 import readline from 'node:readline'
 import { getCalendarClients, getCalendarClient } from '../auth.js'
 import type { CalendarClient, CalendarEvent, CalendarListItem, EventListResult } from '../calendar-client.js'
+import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 import { resolveTimeRange, parseTimeExpression, parseDuration, isDateOnly } from '../calendar-time.js'
 
 // ---------------------------------------------------------------------------
@@ -25,27 +27,19 @@ export function registerCalendarCommands(cli: Goke) {
     .action(async (options) => {
       const clients = await getCalendarClients(options.account)
 
-      const settled = await Promise.allSettled(
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
           const calendars = await client.listCalendars()
+          if (calendars instanceof Error) return calendars
           return { email, calendars }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; calendars: CalendarListItem[] }> => {
-          if (r.status === 'rejected') {
-            const msg = String(r.reason)
-            if (msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized')) {
-              out.error('CalDAV authentication failed. Try: zele login')
-            } else {
-              out.error(`Failed to fetch calendars: ${msg}`)
-            }
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch calendars: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       const showAccount = clients.length > 1
       const merged = allResults.flatMap(({ email, calendars }) =>
@@ -102,9 +96,10 @@ export function registerCalendarCommands(cli: Goke) {
         process.exit(1)
       }
 
-      const settled = await Promise.allSettled(
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
           const tz = await client.getTimezone(calendarId)
+          if (tz instanceof Error) return tz
           const { timeMin, timeMax } = resolveTimeRange({
             from: options.from,
             to: options.to,
@@ -119,9 +114,10 @@ export function registerCalendarCommands(cli: Goke) {
           if (options.all) {
             // Fetch from all calendars
             const calendars = await client.listCalendars()
+            if (calendars instanceof Error) return calendars
             const allEvents: CalendarEvent[] = []
 
-            const perCalResults = await Promise.allSettled(
+            const perCalResults = await Promise.all(
               calendars.map(async (cal) => {
                 const r = await client.listEvents({
                   calendarId: cal.id,
@@ -130,16 +126,14 @@ export function registerCalendarCommands(cli: Goke) {
                   query: options.query,
                   maxResults: max,
                 })
+                if (r instanceof Error) return r
                 return r.events.map((e) => ({ ...e, calendarId: cal.id }))
               }),
             )
 
             for (const r of perCalResults) {
-              if (r.status === 'fulfilled') {
-                allEvents.push(...r.value)
-              } else {
-                out.error(`Calendar fetch failed: ${r.reason}`)
-              }
+              if (r instanceof Error) { out.error(r instanceof AuthError ? `${r.message}. Try: zele login` : r.message); continue }
+              allEvents.push(...r)
             }
 
             result = {
@@ -148,7 +142,7 @@ export function registerCalendarCommands(cli: Goke) {
               timezone: tz,
             }
           } else {
-            result = await client.listEvents({
+            const r = await client.listEvents({
               calendarId,
               timeMin,
               timeMax,
@@ -156,26 +150,19 @@ export function registerCalendarCommands(cli: Goke) {
               maxResults: max,
               pageToken: options.page,
             })
+            if (r instanceof Error) return r
+            result = r
           }
 
           return { email, result, tz }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; result: EventListResult; tz: string }> => {
-          if (r.status === 'rejected') {
-            const msg = String(r.reason)
-            if (msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized')) {
-              out.error('CalDAV authentication failed. Try: zele login')
-            } else {
-              out.error(`Failed to fetch events: ${msg}`)
-            }
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch events: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       const showAccount = clients.length > 1
 
@@ -223,6 +210,7 @@ export function registerCalendarCommands(cli: Goke) {
       const { client } = await getCalendarClient(options.account)
 
       const event = await client.getEvent({ calendarId, eventId })
+      if (event instanceof Error) handleCommandError(event)
       const time = out.formatEventTime(event.start, event.end, event.allDay)
 
       const doc: Record<string, unknown> = {
@@ -289,6 +277,7 @@ export function registerCalendarCommands(cli: Goke) {
       const calendarId = options.calendar ?? 'primary'
       const { client } = await getCalendarClient(options.account)
       const tz = await client.getTimezone(calendarId)
+      if (tz instanceof Error) handleCommandError(tz)
 
       const allDay = options.allDay || (isDateOnly(options.from) && isDateOnly(options.to))
       const start = allDay ? options.from : parseTimeExpression(options.from, tz)
@@ -315,7 +304,7 @@ export function registerCalendarCommands(cli: Goke) {
 
       const reminders = options.reminder ? [parseReminder(options.reminder)] : undefined
 
-      const event = await client.createEvent({
+      const eventResult = await client.createEvent({
         calendarId,
         summary: options.summary,
         start,
@@ -331,7 +320,8 @@ export function registerCalendarCommands(cli: Goke) {
         visibility: options.visibility,
       })
 
-      printEventDetail(event)
+      if (eventResult instanceof Error) handleCommandError(eventResult)
+      printEventDetail(eventResult)
       out.success('Event created')
     })
 
@@ -384,6 +374,7 @@ export function registerCalendarCommands(cli: Goke) {
           }
         } else {
           const tz = await client.getTimezone(calendarId)
+          if (tz instanceof Error) handleCommandError(tz)
           if (options.from) start = parseTimeExpression(options.from, tz)
           if (options.to) {
             const durationMs = parseDuration(options.to)
@@ -396,7 +387,7 @@ export function registerCalendarCommands(cli: Goke) {
         }
       }
 
-      const event = await client.updateEvent({
+      const updateResult = await client.updateEvent({
         calendarId,
         eventId,
         summary: options.summary,
@@ -412,7 +403,8 @@ export function registerCalendarCommands(cli: Goke) {
         visibility: options.visibility,
       })
 
-      printEventDetail(event)
+      if (updateResult instanceof Error) handleCommandError(updateResult)
+      printEventDetail(updateResult)
       out.success('Event updated')
     })
 
@@ -441,7 +433,8 @@ export function registerCalendarCommands(cli: Goke) {
         }
       }
 
-      await client.deleteEvent({ calendarId, eventId })
+      const deleteResult = await client.deleteEvent({ calendarId, eventId })
+      if (deleteResult instanceof Error) handleCommandError(deleteResult)
 
       out.printYaml({ deleted: true, id: eventId })
       out.success('Event deleted')
@@ -471,16 +464,17 @@ export function registerCalendarCommands(cli: Goke) {
       const calendarId = options.calendar ?? 'primary'
       const { client } = await getCalendarClient(options.account)
 
-      const event = await client.respondToEvent({
+      const respondResult = await client.respondToEvent({
         calendarId,
         eventId,
         status: options.status as 'accepted' | 'declined' | 'tentative',
         comment: options.comment,
       })
+      if (respondResult instanceof Error) handleCommandError(respondResult)
 
       out.printYaml({
-        id: event.id,
-        summary: event.summary,
+        id: respondResult.id,
+        summary: respondResult.summary,
         status: options.status,
         ...(options.comment ? { comment: options.comment } : {}),
       })
@@ -507,6 +501,7 @@ export function registerCalendarCommands(cli: Goke) {
 
       const { client } = await getCalendarClient(options.account)
       const tz = await client.getTimezone()
+      if (tz instanceof Error) handleCommandError(tz)
 
       const timeMin = parseTimeExpression(options.from, tz)
       const timeMax = parseTimeExpression(options.to, tz)

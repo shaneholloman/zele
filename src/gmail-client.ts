@@ -12,7 +12,8 @@ import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail'
 import type { OAuth2Client } from 'google-auth-library'
 import { createMimeMessage } from 'mimetext'
 import { parseFrom, parseAddressList } from './email-utils.js'
-import { withRetry, mapConcurrent } from './api-utils.js'
+import * as errore from 'errore'
+import { withRetry, mapConcurrent, AuthError, isAuthLikeError, ApiError, NotFoundError, EmptyThreadError, MissingDataError } from './api-utils.js'
 import { renderEmailBody } from './output.js'
 import { getPrisma } from './db.js'
 import type { AccountId } from './auth.js'
@@ -157,6 +158,18 @@ function isExpired(createdAt: Date, ttlMs: number): boolean {
   return createdAt.getTime() + ttlMs < Date.now()
 }
 
+/** Boundary helper: wrap a googleapis SDK call, converting auth-like errors to AuthError values.
+ *  Non-auth errors are wrapped in ApiError so they remain error values (no throwing).
+ *  Original error is preserved as `cause` for debugging. */
+function gmailBoundary<T>(email: string, fn: () => Promise<T>) {
+  return errore.tryAsync({
+    try: fn,
+    catch: (err) => isAuthLikeError(err)
+      ? new AuthError({ email, reason: String(err) })
+      : new ApiError({ reason: String(err), cause: err }),
+  })
+}
+
 export class GmailClient {
   private gmail: gmail_v1.Gmail
   private labelIdCache: Record<string, string> = {}
@@ -288,18 +301,21 @@ export class GmailClient {
     maxResults?: number
     labelIds?: string[]
     pageToken?: string
-  } = {}): Promise<ThreadListResult> {
+  } = {}): Promise<ThreadListResult | AuthError | ApiError> {
     const { q, resolvedLabelIds } = this.buildSearchParams(folder, query, labelIds)
 
-    const res = await withRetry(() =>
-      this.gmail.users.threads.list({
-        userId: 'me',
-        q: q || undefined,
-        labelIds: resolvedLabelIds.length > 0 ? resolvedLabelIds : undefined,
-        maxResults,
-        pageToken: pageToken || undefined,
-      }),
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.threads.list({
+          userId: 'me',
+          q: q || undefined,
+          labelIds: resolvedLabelIds.length > 0 ? resolvedLabelIds : undefined,
+          maxResults,
+          pageToken: pageToken || undefined,
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
     const rawThreads = res.data.threads ?? []
 
@@ -315,26 +331,29 @@ export class GmailClient {
         }
       }
 
-      try {
-        const detail = await withRetry(() =>
+      // Boundary: threads.get — auth errors abort via mapConcurrent, others skip.
+      const detail = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+        withRetry(() =>
           this.gmail.users.threads.get({
             userId: 'me',
             id: t.id!,
             format: 'full',
           }),
-        )
+        ),
+      )
+      if (detail instanceof AuthError) return detail
+      if (detail instanceof Error) return null
 
-        const parsed = GmailClient.parseRawThread(detail.data)
-        await this.cacheThreadData(t.id, detail.data, parsed)
+      const parsed = GmailClient.parseRawThread(detail.data)
+      await this.cacheThreadData(t.id, detail.data, parsed)
 
-        return {
-          parsed: GmailClient.parseRawThreadListItem(detail.data),
-          raw: detail.data,
-        }
-      } catch {
-        return null
+      return {
+        parsed: GmailClient.parseRawThreadListItem(detail.data),
+        raw: detail.data,
       }
     })
+
+    if (hydrated instanceof Error) return hydrated
 
     const valid = hydrated.filter((t): t is NonNullable<typeof t> => t !== null)
     const result: ThreadListResult = {
@@ -377,14 +396,17 @@ export class GmailClient {
   }: {
     messageId: string
     format?: 'full' | 'metadata' | 'minimal' | 'raw'
-  }) {
-    const res = await withRetry(() =>
-      this.gmail.users.messages.get({
-        userId: 'me',
-        id: messageId,
-        format,
-      }),
+  }): Promise<ParsedMessage | { id: string; raw: string } | AuthError | ApiError> {
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.messages.get({
+          userId: 'me',
+          id: messageId,
+          format,
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
     if (format === 'raw') {
       return {
@@ -396,16 +418,19 @@ export class GmailClient {
     return this.parseMessage(res.data)
   }
 
-  async getRawMessage({ messageId }: { messageId: string }) {
-    const res = await withRetry(() =>
-      this.gmail.users.messages.get({
-        userId: 'me',
-        id: messageId,
-        format: 'raw',
-      }),
+  async getRawMessage({ messageId }: { messageId: string }): Promise<string | MissingDataError | AuthError | ApiError> {
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.messages.get({
+          userId: 'me',
+          id: messageId,
+          format: 'raw',
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
-    if (!res.data.raw) throw new Error('No raw email data found')
+    if (!res.data.raw) return new MissingDataError({ what: 'raw email data', resource: `message ${messageId}` })
     return decodeBase64Url(res.data.raw)
   }
 
@@ -483,10 +508,10 @@ export class GmailClient {
     replyAll?: boolean
     cc?: Array<{ email: string }>
     fromEmail?: string
-  }) {
+  }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Message> {
     const { parsed: thread } = await this.getThread({ threadId })
     if (thread.messages.length === 0) {
-      throw new Error('No messages in thread')
+      return new EmptyThreadError({ threadId })
     }
 
     const lastMsg = thread.messages[thread.messages.length - 1]!
@@ -497,6 +522,7 @@ export class GmailClient {
     let resolvedCc: Array<{ email: string }> | undefined
     if (replyAll) {
       const profile = await this.getProfile()
+      if (profile instanceof Error) return profile
       const myEmail = profile.emailAddress.toLowerCase()
 
       const allRecipients = [
@@ -547,10 +573,10 @@ export class GmailClient {
     to: Array<{ email: string }>
     body?: string
     fromEmail?: string
-  }) {
+  }): Promise<EmptyThreadError | gmail_v1.Schema$Message> {
     const { parsed: thread } = await this.getThread({ threadId })
     if (thread.messages.length === 0) {
-      throw new Error('No messages in thread')
+      return new EmptyThreadError({ threadId })
     }
 
     const lastMsg = thread.messages[thread.messages.length - 1]!
@@ -617,16 +643,19 @@ export class GmailClient {
     return res.data
   }
 
-  async getDraft({ draftId }: { draftId: string }) {
-    const res = await withRetry(() =>
-      this.gmail.users.drafts.get({
-        userId: 'me',
-        id: draftId,
-        format: 'full',
-      }),
+  async getDraft({ draftId }: { draftId: string }): Promise<NotFoundError | AuthError | ApiError | { id: string; message: ParsedMessage; to: string[]; cc: string[]; bcc: string[] }> {
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.drafts.get({
+          userId: 'me',
+          id: draftId,
+          format: 'full',
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
-    if (!res.data || !res.data.message) throw new Error('Draft not found')
+    if (!res.data || !res.data.message) return new NotFoundError({ resource: `draft ${draftId}` })
 
     const message = this.parseMessage(res.data.message)
     const headers = res.data.message.payload?.headers ?? []
@@ -648,40 +677,46 @@ export class GmailClient {
     query?: string
     maxResults?: number
     pageToken?: string
-  } = {}) {
-    const res = await withRetry(() =>
-      this.gmail.users.drafts.list({
-        userId: 'me',
-        q: query || undefined,
-        maxResults,
-        pageToken: pageToken || undefined,
-      }),
+  } = {}): Promise<{ drafts: Array<{ id: string; threadId: string | null; subject: string; to: string[]; date: string; snippet: string }>; nextPageToken: string | null } | AuthError | ApiError> {
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.drafts.list({
+          userId: 'me',
+          q: query || undefined,
+          maxResults,
+          pageToken: pageToken || undefined,
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
     const drafts = await mapConcurrent(res.data.drafts ?? [], async (draft) => {
       if (!draft.id) return null
-      try {
-        const detail = await withRetry(() =>
+      // Boundary: drafts.get — auth errors abort via mapConcurrent, others skip.
+      const detail = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+        withRetry(() =>
           this.gmail.users.drafts.get({
             userId: 'me',
             id: draft.id!,
             format: 'metadata',
           }),
-        )
-        if (!detail.data.message) return null
-        const headers = detail.data.message.payload?.headers ?? []
-        return {
-          id: draft.id,
-          threadId: detail.data.message.threadId ?? null,
-          subject: this.getHeader(headers, 'subject') ?? '(no subject)',
-          to: this.getHeaderValues(headers, 'to'),
-          date: this.getHeader(headers, 'date') ?? '',
-          snippet: detail.data.message.snippet ?? '',
-        }
-      } catch {
-        return null
+        ),
+      )
+      if (detail instanceof AuthError) return detail
+      if (detail instanceof Error) return null
+      if (!detail.data.message) return null
+      const headers = detail.data.message.payload?.headers ?? []
+      return {
+        id: draft.id,
+        threadId: detail.data.message.threadId ?? null,
+        subject: this.getHeader(headers, 'subject') ?? '(no subject)',
+        to: this.getHeaderValues(headers, 'to'),
+        date: this.getHeader(headers, 'date') ?? '',
+        snippet: detail.data.message.snippet ?? '',
       }
     })
+
+    if (drafts instanceof Error) return drafts
 
     return {
       drafts: drafts.filter((d): d is NonNullable<typeof d> => d !== null),
@@ -715,35 +750,39 @@ export class GmailClient {
   // Label mutations (read/unread, star, archive, trash, labels)
   // =========================================================================
 
-  async markAsRead({ threadIds }: { threadIds: string[] }) {
+  async markAsRead({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
     const messageIds = await this.getMessageIdsForThreads(threadIds, (labelIds) =>
       labelIds.includes('UNREAD'),
     )
+    if (messageIds instanceof Error) return messageIds
     if (messageIds.length === 0) return
     await this.batchModifyMessages(messageIds, { removeLabelIds: ['UNREAD'] })
     await this.invalidateAfterThreadMutation(threadIds)
   }
 
-  async markAsUnread({ threadIds }: { threadIds: string[] }) {
+  async markAsUnread({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
     const messageIds = await this.getMessageIdsForThreads(threadIds, (labelIds) =>
       !labelIds.includes('UNREAD'),
     )
+    if (messageIds instanceof Error) return messageIds
     if (messageIds.length === 0) return
     await this.batchModifyMessages(messageIds, { addLabelIds: ['UNREAD'] })
     await this.invalidateAfterThreadMutation(threadIds)
   }
 
-  async star({ threadIds }: { threadIds: string[] }) {
+  async star({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
     const messageIds = await this.getMessageIdsForThreads(threadIds)
+    if (messageIds instanceof Error) return messageIds
     if (messageIds.length === 0) return
     await this.batchModifyMessages(messageIds, { addLabelIds: ['STARRED'] })
     await this.invalidateAfterThreadMutation(threadIds)
   }
 
-  async unstar({ threadIds }: { threadIds: string[] }) {
+  async unstar({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
     const messageIds = await this.getMessageIdsForThreads(threadIds, (labelIds) =>
       labelIds.includes('STARRED'),
     )
+    if (messageIds instanceof Error) return messageIds
     if (messageIds.length === 0) return
     await this.batchModifyMessages(messageIds, { removeLabelIds: ['STARRED'] })
     await this.invalidateAfterThreadMutation(threadIds)
@@ -757,18 +796,23 @@ export class GmailClient {
     threadIds: string[]
     addLabelIds?: string[]
     removeLabelIds?: string[]
-  }) {
+  }): Promise<void | AuthError | ApiError> {
     // Resolve add labels (auto-create if missing), but only look up remove labels (never create)
     const resolvedAdd = await Promise.all(addLabelIds.map((l) => this.resolveLabelId(l)))
-    const resolvedRemove = (
-      await Promise.all(removeLabelIds.map((l) => this.lookupLabelId(l)))
-    ).filter((id): id is string => id !== null)
+    const addErr = resolvedAdd.find((r): r is AuthError | ApiError => r instanceof Error)
+    if (addErr) return addErr
+
+    const resolvedRemoveRaw = await Promise.all(removeLabelIds.map((l) => this.lookupLabelId(l)))
+    const removeErr = resolvedRemoveRaw.find((r): r is AuthError | ApiError => r instanceof Error)
+    if (removeErr) return removeErr
+    const resolvedRemove = resolvedRemoveRaw.filter((id): id is string => typeof id === 'string')
 
     const messageIds = await this.getMessageIdsForThreads(threadIds)
+    if (messageIds instanceof Error) return messageIds
     if (messageIds.length === 0) return
 
     await this.batchModifyMessages(messageIds, {
-      addLabelIds: resolvedAdd,
+      addLabelIds: resolvedAdd.filter((r): r is string => typeof r === 'string'),
       removeLabelIds: resolvedRemove,
     })
     await this.invalidateAfterThreadMutation(threadIds)
@@ -794,8 +838,9 @@ export class GmailClient {
     await this.invalidateAfterThreadMutation([threadId])
   }
 
-  async archive({ threadIds }: { threadIds: string[] }) {
+  async archive({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
     const messageIds = await this.getMessageIdsForThreads(threadIds)
+    if (messageIds instanceof Error) return messageIds
     if (messageIds.length === 0) return
     await this.batchModifyMessages(messageIds, { removeLabelIds: ['INBOX'] })
     await this.invalidateAfterThreadMutation(threadIds)
@@ -809,7 +854,7 @@ export class GmailClient {
   }
 
   /** Moves all spam threads to trash. Does not permanently delete. */
-  async trashAllSpam() {
+  async trashAllSpam(): Promise<{ count: number } | AuthError | ApiError> {
     let totalDeleted = 0
     let pageToken: string | undefined
 
@@ -819,11 +864,13 @@ export class GmailClient {
         maxResults: 100,
         pageToken,
       })
+      if (res instanceof Error) return res
 
       if (res.threads.length === 0) break
 
       const threadIds = res.threads.map((t) => t.id)
       const messageIds = await this.getMessageIdsForThreads(threadIds)
+      if (messageIds instanceof Error) return messageIds
       await this.batchModifyMessages(messageIds, {
         addLabelIds: ['TRASH'],
         removeLabelIds: ['SPAM', 'INBOX'],
@@ -844,16 +891,19 @@ export class GmailClient {
   // Labels CRUD
   // =========================================================================
 
-  async listLabels() {
+  async listLabels(): Promise<{ parsed: ReturnType<typeof GmailClient.parseRawLabels>; raw: gmail_v1.Schema$Label[] } | AuthError | ApiError> {
     // Check cache
     const cached = await this.getCachedLabels()
     if (cached) {
       return { parsed: GmailClient.parseRawLabels(cached), raw: cached }
     }
 
-    const res = await withRetry(() =>
-      this.gmail.users.labels.list({ userId: 'me' }),
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.labels.list({ userId: 'me' }),
+      ),
     )
+    if (res instanceof Error) return res
 
     const rawLabels = res.data.labels ?? []
 
@@ -931,55 +981,61 @@ export class GmailClient {
   // Label counts (unread counts per folder/label)
   // =========================================================================
 
-  async getLabelCounts() {
+  async getLabelCounts(): Promise<{ parsed: Array<{ label: string; count: number }>; raw: gmail_v1.Schema$Label[]; archiveEstimate: number | null } | AuthError | ApiError> {
     // Always fresh: label counts are user-facing live data.
 
-    // Fetch label counts and archive count concurrently
-    const [labelsResult, archiveRes] = await Promise.all([
-      this.listLabels(),
+    // Archive count is best-effort — auth errors propagate, others yield null.
+    const archiveRes = await gmailBoundary(this.account?.email ?? 'unknown', () =>
       withRetry(() =>
         this.gmail.users.threads.list({
           userId: 'me',
           q: 'in:archive',
           maxResults: 1,
         }),
-      ).catch(() => null),
-    ])
+      ),
+    )
+    if (archiveRes instanceof AuthError) return archiveRes
+    // archiveRes may be ApiError (non-auth failure) — archive count unavailable
+    const labelsResult = await this.listLabels()
+    if (labelsResult instanceof Error) return labelsResult
 
     // Fetch detailed counts for each label — collect both raw and parsed
     const rawDetails: gmail_v1.Schema$Label[] = []
     const counts = await mapConcurrent(labelsResult.parsed, async (label) => {
       if (!label.id) return null
-      try {
-        const detail = await withRetry(() =>
+      // Boundary: labels.get — auth errors abort via mapConcurrent, others skip.
+      const detail = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+        withRetry(() =>
           this.gmail.users.labels.get({
             userId: 'me',
             id: label.id,
           }),
-        )
-        rawDetails.push(detail.data)
-        const labelName = (detail.data.name ?? detail.data.id ?? '').toLowerCase()
-        const isTotalLabel = labelName === 'draft' || labelName === 'sent'
-        return {
-          label: labelName === 'draft' ? 'drafts' : labelName,
-          count: Number(isTotalLabel ? detail.data.threadsTotal : detail.data.threadsUnread) || 0,
-        }
-      } catch {
-        return null
+        ),
+      )
+      if (detail instanceof AuthError) return detail
+      if (detail instanceof Error) return null
+      rawDetails.push(detail.data)
+      const labelName = (detail.data.name ?? detail.data.id ?? '').toLowerCase()
+      const isTotalLabel = labelName === 'draft' || labelName === 'sent'
+      return {
+        label: labelName === 'draft' ? 'drafts' : labelName,
+        count: Number(isTotalLabel ? detail.data.threadsTotal : detail.data.threadsUnread) || 0,
       }
     })
+
+    if (counts instanceof Error) return counts
 
     const result = counts.filter((c): c is NonNullable<typeof c> => c !== null)
 
     // Add archive count (same as Zero's count() method)
-    if (archiveRes) {
+    if (!(archiveRes instanceof Error)) {
       result.push({
         label: 'archive',
         count: Number(archiveRes.data.resultSizeEstimate ?? 0),
       })
     }
 
-    const archiveEstimate = archiveRes ? Number(archiveRes.data.resultSizeEstimate ?? 0) : null
+    const archiveEstimate = !(archiveRes instanceof Error) ? Number(archiveRes.data.resultSizeEstimate ?? 0) : null
 
     return { parsed: result, raw: rawDetails, archiveEstimate }
   }
@@ -1012,14 +1068,17 @@ export class GmailClient {
   // Account / profile
   // =========================================================================
 
-  async getProfile() {
+  async getProfile(): Promise<{ emailAddress: string; messagesTotal: number; threadsTotal: number; historyId: string } | AuthError | ApiError> {
     // Check cache
     const cached = await this.getCachedProfile()
     if (cached) return cached
 
-    const res = await withRetry(() =>
-      this.gmail.users.getProfile({ userId: 'me' }),
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.getProfile({ userId: 'me' }),
+      ),
     )
+    if (res instanceof Error) return res
 
     const profile = {
       emailAddress: res.data.emailAddress ?? '',
@@ -1263,29 +1322,32 @@ export class GmailClient {
     return results
   }
 
-  async getEmailAliases() {
+  async getEmailAliases(): Promise<Array<{ email: string; name?: string; primary: boolean }> | AuthError | ApiError> {
     const profile = await this.getProfile()
+    if (profile instanceof Error) return profile
     const primaryEmail = profile.emailAddress
 
     const aliases: Array<{ email: string; name?: string; primary: boolean }> = [
       { email: primaryEmail, primary: true },
     ]
 
-    try {
-      const settings = await withRetry(() =>
+    // Boundary: sendAs.list — auth errors propagate; permission-denied is expected
+    // (some accounts lack Gmail settings access) and yields primary email only.
+    const settings = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
         this.gmail.users.settings.sendAs.list({ userId: 'me' }),
-      )
+      ),
+    )
+    if (settings instanceof AuthError) return settings
+    if (settings instanceof Error) return aliases // permission denied — return primary only
 
-      for (const alias of settings.data.sendAs ?? []) {
-        if (alias.isPrimary && alias.sendAsEmail === primaryEmail) continue
-        aliases.push({
-          email: alias.sendAsEmail ?? '',
-          name: alias.displayName ?? undefined,
-          primary: alias.isPrimary ?? false,
-        })
-      }
-    } catch {
-      // sendAs.list may fail if the user doesn't have permission
+    for (const alias of settings.data.sendAs ?? []) {
+      if (alias.isPrimary && alias.sendAsEmail === primaryEmail) continue
+      aliases.push({
+        email: alias.sendAsEmail ?? '',
+        name: alias.displayName ?? undefined,
+        primary: alias.isPrimary ?? false,
+      })
     }
 
     return aliases
@@ -1303,21 +1365,24 @@ export class GmailClient {
     startHistoryId: string
     labelId?: string
     historyTypes?: Array<'messageAdded' | 'messageDeleted' | 'labelAdded' | 'labelRemoved'>
-  }) {
+  }): Promise<{ history: gmail_v1.Schema$History[]; historyId: string } | AuthError | ApiError> {
     const allHistory: gmail_v1.Schema$History[] = []
     let pageToken: string | undefined
     let latestHistoryId = startHistoryId
 
     while (true) {
-      const res = await withRetry(() =>
-        this.gmail.users.history.list({
-          userId: 'me',
-          startHistoryId,
-          labelId,
-          historyTypes,
-          pageToken,
-        }),
+      const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+        withRetry(() =>
+          this.gmail.users.history.list({
+            userId: 'me',
+            startHistoryId,
+            labelId,
+            historyTypes,
+            pageToken,
+          }),
+        ),
       )
+      if (res instanceof Error) return res
 
       if (res.data.history) {
         allHistory.push(...res.data.history)
@@ -1355,35 +1420,43 @@ export class GmailClient {
     query?: string
     once?: boolean
   } = {}): AsyncGenerator<WatchEvent> {
-    if (!this.account) throw new Error('watchInbox requires an authenticated account')
+    if (!this.account) throw new MissingDataError({ what: 'authenticated account', resource: 'watchInbox' })
 
     const filterLabelId = WATCH_FOLDER_LABELS[folder]
     if (!filterLabelId) {
-      throw new Error(`Unsupported folder for watch: "${folder}". Supported: ${Object.keys(WATCH_FOLDER_LABELS).join(', ')}`)
+      throw new NotFoundError({ resource: `watch folder "${folder}". Supported: ${Object.keys(WATCH_FOLDER_LABELS).join(', ')}` })
     }
 
-    // Seed historyId
-    let historyId = await getLastHistoryId(this.account)
+    // Seed historyId — guaranteed non-undefined after this block
+    let historyId: string = await getLastHistoryId(this.account) ?? ''
     if (!historyId) {
       const profile = await this.getProfile()
+      if (profile instanceof Error) throw profile
       historyId = profile.historyId
       await setLastHistoryId(this.account, historyId)
     }
 
     while (true) {
-      try {
-        yield* this.pollOnce(historyId, filterLabelId, query, (newId) => { historyId = newId })
-      } catch (err: any) {
-        if (isHistoryExpired(err)) {
-          // historyId expired — Google only keeps ~7 days. Re-seed.
-          const profile = await this.getProfile()
-          historyId = profile.historyId
-          await setLastHistoryId(this.account, historyId)
-          // Retry once after reseed
-          yield* this.pollOnce(historyId, filterLabelId, query, (newId) => { historyId = newId })
-        } else {
-          throw err
-        }
+      // listHistory returns errors as values — check and handle history expiry.
+      const historyResult = await this.listHistory({
+        startHistoryId: historyId,
+        labelId: filterLabelId,
+        historyTypes: ['messageAdded'],
+      })
+
+      if (historyResult instanceof Error) {
+        if (!isHistoryExpired(historyResult)) throw historyResult
+        // historyId expired — Google only keeps ~7 days. Re-seed.
+        const profile = await this.getProfile()
+        if (profile instanceof Error) throw profile
+        historyId = profile.historyId
+        await setLastHistoryId(this.account, historyId)
+        // Retry once after reseed
+        const retryResult = await this.listHistory({ startHistoryId: historyId, labelId: filterLabelId, historyTypes: ['messageAdded'] })
+        if (retryResult instanceof Error) throw retryResult
+        yield* this.pollOnceFromHistory(retryResult, historyId, query, (newId) => { historyId = newId })
+      } else {
+        yield* this.pollOnceFromHistory(historyResult, historyId, query, (newId) => { historyId = newId })
       }
 
       if (once) return
@@ -1391,20 +1464,16 @@ export class GmailClient {
     }
   }
 
-  /** Single poll tick — yields WatchEvents for new messages. */
-  private async *pollOnce(
-    historyId: string,
-    filterLabelId: string,
+  /** Single poll tick from pre-fetched history — yields WatchEvents for new messages. */
+  private async *pollOnceFromHistory(
+    historyData: { history: gmail_v1.Schema$History[]; historyId: string },
+    prevHistoryId: string,
     query: string | undefined,
     updateHistoryId: (newId: string) => void,
   ): AsyncGenerator<WatchEvent> {
-    const { history, historyId: newHistoryId } = await this.listHistory({
-      startHistoryId: historyId,
-      labelId: filterLabelId,
-      historyTypes: ['messageAdded'],
-    })
+    const { history, historyId: newHistoryId } = historyData
 
-    if (newHistoryId !== historyId) {
+    if (newHistoryId !== prevHistoryId) {
       updateHistoryId(newHistoryId)
       await setLastHistoryId(this.account!, newHistoryId)
     }
@@ -1427,19 +1496,18 @@ export class GmailClient {
 
     if (messageIds.length === 0) return
 
-    // Hydrate messages with metadata (bounded concurrency)
+    // Hydrate messages with metadata (bounded concurrency).
+    // getMessage returns errors as values — auth errors abort via mapConcurrent,
+    // 404s (message deleted between history and hydration) are skipped.
     const hydrated = await mapConcurrent(messageIds, async (msgId) => {
-      try {
-        const msg = await this.getMessage({ messageId: msgId, format: 'metadata' })
-        if ('raw' in msg) return null
-        if (query && !matchesQuery(msg, query)) return null
-        return msg
-      } catch (err: any) {
-        const status = err?.code ?? err?.status ?? err?.response?.status
-        if (status === 404) return null // message deleted between history fetch and hydration
-        return null
-      }
+      const msg = await this.getMessage({ messageId: msgId, format: 'metadata' })
+      if (msg instanceof AuthError) return msg // abort batch
+      if (msg instanceof Error) return null    // skip this message
+      if ('raw' in msg) return null
+      if (query && !matchesQuery(msg, query)) return null
+      return msg
     })
+    if (hydrated instanceof Error) throw hydrated // propagate to generator consumer
 
     for (const msg of hydrated) {
       if (!msg) continue
@@ -1551,11 +1619,13 @@ export class GmailClient {
   // =========================================================================
 
   /** Look up a label ID by name. Returns null if not found (never creates). */
-  private async lookupLabelId(labelNameOrId: string): Promise<string | null> {
+  private async lookupLabelId(labelNameOrId: string): Promise<string | null | AuthError | ApiError> {
     if (SYSTEM_LABEL_IDS.has(labelNameOrId)) return labelNameOrId
     if (this.labelIdCache[labelNameOrId]) return this.labelIdCache[labelNameOrId]!
 
-    const { parsed: labels } = await this.listLabels()
+    const labelsResult = await this.listLabels()
+    if (labelsResult instanceof Error) return labelsResult
+    const { parsed: labels } = labelsResult
     const match = labels.find((l) => l.name.toLowerCase() === labelNameOrId.toLowerCase())
     if (match) {
       this.labelIdCache[labelNameOrId] = match.id
@@ -1566,11 +1636,13 @@ export class GmailClient {
   }
 
   /** Resolve a label ID by name, auto-creating if it doesn't exist. */
-  private async resolveLabelId(labelNameOrId: string): Promise<string> {
+  private async resolveLabelId(labelNameOrId: string): Promise<string | AuthError | ApiError> {
     if (SYSTEM_LABEL_IDS.has(labelNameOrId)) return labelNameOrId
     if (this.labelIdCache[labelNameOrId]) return this.labelIdCache[labelNameOrId]!
 
-    const { parsed: labels } = await this.listLabels()
+    const labelsResult = await this.listLabels()
+    if (labelsResult instanceof Error) return labelsResult
+    const { parsed: labels } = labelsResult
     const match = labels.find((l) => l.name.toLowerCase() === labelNameOrId.toLowerCase())
     if (match) {
       this.labelIdCache[labelNameOrId] = match.id
@@ -1649,17 +1721,20 @@ export class GmailClient {
   private async getMessageIdsForThreads(
     threadIds: string[],
     filter?: (labelIds: string[]) => boolean,
-  ) {
+  ): Promise<string[] | AuthError | ApiError> {
     const allIds: string[] = []
 
-    await mapConcurrent(threadIds, async (threadId) => {
-      const res = await withRetry(() =>
-        this.gmail.users.threads.get({
-          userId: 'me',
-          id: threadId,
-          format: 'metadata',
-        }),
+    const result = await mapConcurrent(threadIds, async (threadId) => {
+      const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+        withRetry(() =>
+          this.gmail.users.threads.get({
+            userId: 'me',
+            id: threadId,
+            format: 'metadata',
+          }),
+        ),
       )
+      if (res instanceof Error) return res
 
       for (const msg of res.data.messages ?? []) {
         if (!msg.id) continue
@@ -1667,6 +1742,7 @@ export class GmailClient {
         allIds.push(msg.id)
       }
     })
+    if (result instanceof Error) return result
 
     return [...new Set(allIds)]
   }

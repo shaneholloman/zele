@@ -9,6 +9,7 @@ import path from 'node:path'
 import { getClient } from '../auth.js'
 import { GmailClient } from '../gmail-client.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 
 export function registerAttachmentCommands(cli: Goke) {
   // =========================================================================
@@ -21,6 +22,7 @@ export function registerAttachmentCommands(cli: Goke) {
       const { client } = await getClient(options.account)
 
       const msg = await client.getMessage({ messageId })
+      if (msg instanceof Error) return handleCommandError(msg)
       if ('raw' in msg) {
         out.error('Cannot list attachments for raw messages')
         process.exit(1)
@@ -58,6 +60,7 @@ export function registerAttachmentCommands(cli: Goke) {
 
       // Get attachment metadata first
       const msg = await client.getMessage({ messageId })
+      if (msg instanceof Error) return handleCommandError(msg)
       if ('raw' in msg) {
         out.error('Cannot get attachments for raw messages')
         process.exit(1)

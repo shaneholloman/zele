@@ -5,6 +5,7 @@
 
 import type { Goke } from 'goke'
 import { getClients } from '../auth.js'
+import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
 
 export function registerProfileCommands(cli: Goke) {
@@ -13,25 +14,23 @@ export function registerProfileCommands(cli: Goke) {
     .action(async (options) => {
       const clients = await getClients(options.account)
 
-      // Fetch all accounts concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Fetch all accounts concurrently
+      const allResults = await Promise.all(
         clients.map(async ({ client }) => {
           const profile = await client.getProfile()
+          if (profile instanceof Error) return profile
           // Always fetch aliases fresh
           const aliases = await client.getEmailAliases()
+          if (aliases instanceof Error) return aliases
           return { profile, aliases }
         }),
       )
 
-      const results = settled
-        .filter((r): r is PromiseFulfilledResult<{ profile: Awaited<ReturnType<typeof import('../gmail-client.js').GmailClient.prototype.getProfile>>; aliases: Awaited<ReturnType<typeof import('../gmail-client.js').GmailClient.prototype.getEmailAliases>> }> => {
-          if (r.status === 'rejected') {
-            out.error(`Failed to fetch profile: ${r.reason}`)
-            return false
-          }
+      const results = allResults.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch profile: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       for (const { profile, aliases } of results) {
         out.printYaml({

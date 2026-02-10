@@ -246,3 +246,21 @@ export function success(msg: string): void {
 export function error(msg: string): void {
   process.stderr.write(pc.red(msg) + '\n')
 }
+
+// ---------------------------------------------------------------------------
+// Centralized command error handler (errore pattern)
+// ---------------------------------------------------------------------------
+
+import { AuthError } from './api-utils.js'
+
+/** Handle any error from a client method in a command context.
+ *  Prints a user-friendly message to stderr and exits.
+ *  AuthError gets a "Try: zele login" hint; all others print their message. */
+export function handleCommandError(err: Error): never {
+  if (err instanceof AuthError) {
+    error(`${err.message}. Try: zele login`)
+  } else {
+    error(err.message)
+  }
+  process.exit(1)
+}

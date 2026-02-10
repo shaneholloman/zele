@@ -6,6 +6,7 @@ import type { Goke } from 'goke'
 import { z } from 'zod'
 import { getClients } from '../auth.js'
 import type { WatchEvent } from '../gmail-client.js'
+import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
 
 // ---------------------------------------------------------------------------
@@ -47,14 +48,25 @@ export function registerWatchCommands(cli: Goke) {
         }),
       )
 
-      // Consume all generators concurrently
-      await Promise.allSettled(
+      // Consume all generators concurrently, surface errors to the user
+      const settled = await Promise.allSettled(
         generators.map(async (gen) => {
           for await (const event of gen) {
             out.printList([formatWatchEvent(event)])
           }
         }),
       )
+
+      for (const result of settled) {
+        if (result.status === 'rejected') {
+          const err = result.reason
+          if (err instanceof AuthError) {
+            out.error(`${err.message}. Try: zele login`)
+          } else {
+            out.error(`Watch failed: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+      }
     })
 }
 

@@ -8,7 +8,9 @@ import { z } from 'zod'
 import fs from 'node:fs'
 import { getClients, getClient } from '../auth.js'
 import type { GmailClient } from '../gmail-client.js'
+import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 import pc from 'picocolors'
 
 export function registerDraftCommands(cli: Goke) {
@@ -29,27 +31,24 @@ export function registerDraftCommands(cli: Goke) {
         process.exit(1)
       }
 
-      // Fetch from all accounts concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Fetch from all accounts concurrently
+      const results = await Promise.all(
         clients.map(async ({ email, client }) => {
           const result = await client.listDrafts({
             query: options.query,
             maxResults: options.max,
             pageToken: options.page,
           })
+          if (result instanceof Error) return result
           return { email, result }
         }),
       )
 
-      const allResults = settled
-        .filter((r): r is PromiseFulfilledResult<{ email: string; result: Awaited<ReturnType<GmailClient['listDrafts']>> }> => {
-          if (r.status === 'rejected') {
-            out.error(`Failed to fetch drafts: ${r.reason}`)
-            return false
-          }
+      const allResults = results.filter((r): r is Exclude<typeof r, Error> => {
+          if (r instanceof AuthError) { out.error(`${r.message}. Try: zele login`); return false }
+          if (r instanceof Error) { out.error(`Failed to fetch drafts: ${r.message}`); return false }
           return true
         })
-        .map((r) => r.value)
 
       // Merge drafts from all accounts, sorted by date descending, capped at max
       const merged = allResults
@@ -88,6 +87,7 @@ export function registerDraftCommands(cli: Goke) {
       const { client } = await getClient(options.account)
 
       const draft = await client.getDraft({ draftId })
+      if (draft instanceof Error) handleCommandError(draft)
 
       process.stdout.write(pc.bold(`Draft: ${draft.message.subject}`) + '\n')
       process.stdout.write(pc.dim(`Draft ID: ${draft.id}`) + '\n')

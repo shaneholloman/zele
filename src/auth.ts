@@ -19,6 +19,8 @@ import pc from 'picocolors'
 import { getPrisma } from './db.js'
 import { GmailClient } from './gmail-client.js'
 import { CalendarClient } from './calendar-client.js'
+import * as errore from 'errore'
+import { AuthError } from './api-utils.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -164,7 +166,7 @@ async function migrateLegacyTokens(): Promise<void> {
     }
 
     const client = new GmailClient({ auth: oauth2Client })
-    const profile = await client.getProfile()
+    const profile = errore.unwrap(await client.getProfile(), 'Legacy token migration: failed to get profile')
     const email = profile.emailAddress
 
     await prisma.account.create({
@@ -308,7 +310,7 @@ export async function login(appId?: string): Promise<{ email: string; appId: str
 
   // Discover email
   const client = new GmailClient({ auth: oauth2Client })
-  const profile = await client.getProfile()
+  const profile = errore.unwrap(await client.getProfile(), 'Login: failed to get profile')
   const email = profile.emailAddress
 
   // Upsert account in DB
