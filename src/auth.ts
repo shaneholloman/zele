@@ -35,44 +35,75 @@ const LEGACY_TOKENS_FILE = path.join(ZELE_DIR, 'tokens.json')
 // which Google restricts — Gmail scopes are blocked from device code entirely).
 // Source: public open-source repos, tested 2026-02-09.
 // ---------------------------------------------------------------------------
-const OAUTH_CLIENTS: Record<string, { clientId: string; clientSecret: string }> = {
+const OAUTH_CLIENTS: Record<string, { clientId: string; clientSecret: string; redirectPort: number }> = {
   // Mozilla Thunderbird — largest user base, highest Google quota.
   // Source: searchfox.org/comm-central/source/mailnews/base/src/OAuth2Providers.sys.mjs
   thunderbird: {
     clientId: '406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com',
     clientSecret: 'kSmqreRr0qwBWJgbf5Y-PjSU',
+    redirectPort: 8089,
   },
   // GNOME Online Accounts — used by Evolution, GNOME Calendar, Nautilus (Drive).
   // Source: github.com/GNOME/gnome-online-accounts/blob/master/meson_options.txt
   gnome: {
     clientId: '44438659992-7kgjeitenc16ssihbtdjbgguch7ju55s.apps.googleusercontent.com',
     clientSecret: '-gMLuQyDiI0XrQS_vx_mhuYF',
+    redirectPort: 8089,
   },
   // KDE KAccounts — used by KMail, KOrganizer, Kontact.
   // Source: github.com/KDE/kaccounts-providers google.provider.in
   kde: {
     clientId: '317066460457-pkpkedrvt2ldq6g2hj1egfka2n7vpuoo.apps.googleusercontent.com',
     clientSecret: 'Y8eFAaWfcanV3amZdDvtbYUq',
+    redirectPort: 8089,
   },
 }
 
 const ACTIVE_CLIENT = OAUTH_CLIENTS.thunderbird!
 
-/** Default app_id for accounts — the Thunderbird OAuth client ID. */
-export const DEFAULT_APP_ID = ACTIVE_CLIENT.clientId
-
 const CLIENT_ID =
-  process.env.ZELE_CLIENT_ID ?? DEFAULT_APP_ID
+  process.env.ZELE_CLIENT_ID ?? ACTIVE_CLIENT.clientId
 
 const CLIENT_SECRET =
   process.env.ZELE_CLIENT_SECRET ?? ACTIVE_CLIENT.clientSecret
 
-const REDIRECT_PORT = 8089
 const SCOPES = [
   'https://mail.google.com/',                       // Gmail (full)
   'https://www.googleapis.com/auth/calendar',       // Calendar (full)
   'https://www.googleapis.com/auth/userinfo.email', // Email identity
 ]
+
+// ---------------------------------------------------------------------------
+// OAuth client resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve OAuth credentials and redirect port for a given appId.
+ * Looks up the matching entry in OAUTH_CLIENTS by client ID.
+ * Falls back to the active client / env vars.
+ */
+function resolveOAuthClient(appId?: string) {
+  let clientId = CLIENT_ID
+  let clientSecret = CLIENT_SECRET
+  let redirectPort = ACTIVE_CLIENT.redirectPort
+
+  if (appId) {
+    // Look up by client ID value in OAUTH_CLIENTS
+    const entry = Object.values(OAUTH_CLIENTS).find((c) => c.clientId === appId)
+    if (entry) {
+      clientId = entry.clientId
+      clientSecret = entry.clientSecret
+      redirectPort = entry.redirectPort
+    } else {
+      // Unknown app ID — use it directly (custom client scenario).
+      // The caller must have set ZELE_CLIENT_SECRET or the token must
+      // already have a refresh_token that works without the secret.
+      clientId = appId
+    }
+  }
+
+  return { clientId, clientSecret, redirectPort }
+}
 
 // ---------------------------------------------------------------------------
 // OAuth2 client factory
@@ -84,27 +115,12 @@ const SCOPES = [
  * the active client / env vars.
  */
 export function createOAuth2Client(appId?: string): OAuth2Client {
-  let clientId = CLIENT_ID
-  let clientSecret = CLIENT_SECRET
-
-  if (appId) {
-    // Look up by client ID value in OAUTH_CLIENTS
-    const entry = Object.values(OAUTH_CLIENTS).find((c) => c.clientId === appId)
-    if (entry) {
-      clientId = entry.clientId
-      clientSecret = entry.clientSecret
-    } else {
-      // Unknown app ID — use it directly (custom client scenario).
-      // The caller must have set ZELE_CLIENT_SECRET or the token must
-      // already have a refresh_token that works without the secret.
-      clientId = appId
-    }
-  }
+  const { clientId, clientSecret, redirectPort } = resolveOAuthClient(appId)
 
   return new OAuth2Client({
     clientId,
     clientSecret,
-    redirectUri: `http://localhost:${REDIRECT_PORT}`,
+    redirectUri: `http://localhost:${redirectPort}`,
   })
 }
 
@@ -193,14 +209,14 @@ function extractCodeFromInput(input: string): string | null {
   return null
 }
 
-async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client): Promise<string> {
+async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client, port: number): Promise<string> {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
     prompt: 'consent',
   })
 
-  await fkill(`:${REDIRECT_PORT}`, { force: true, silent: true }).catch(() => {})
+  await fkill(`:${port}`, { force: true, silent: true }).catch(() => {})
 
   process.stderr.write('\n' + pc.bold('1.') + ' Open this URL to authorize:\n\n')
   process.stderr.write('   ' + pc.cyan(pc.underline(authUrl)) + '\n\n')
@@ -233,7 +249,7 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client): Promise<strin
     }
 
     server = http.createServer((req, res) => {
-      const url = new URL(req.url!, `http://localhost:${REDIRECT_PORT}`)
+      const url = new URL(req.url!, `http://localhost:${port}`)
       const code = url.searchParams.get('code')
       const error = url.searchParams.get('error')
 
@@ -255,7 +271,7 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client): Promise<strin
       res.end('<h1>No authorization code received</h1>')
     })
 
-    server.listen(REDIRECT_PORT)
+    server.listen(port)
 
     if (process.stdin.isTTY) {
       rl = readline.createInterface({ input: process.stdin, output: process.stderr })
@@ -280,10 +296,11 @@ async function getAuthCodeFromBrowser(oauth2Client: OAuth2Client): Promise<strin
  * Run the full browser OAuth flow and save the account to the DB.
  * Returns the account identifier and an authenticated GmailClient.
  */
-export async function login(): Promise<{ email: string; appId: string; client: GmailClient }> {
-  const oauth2Client = createOAuth2Client()
+export async function login(appId?: string): Promise<{ email: string; appId: string; client: GmailClient }> {
+  const resolved = resolveOAuthClient(appId)
+  const oauth2Client = createOAuth2Client(appId)
 
-  const code = await getAuthCodeFromBrowser(oauth2Client)
+  const code = await getAuthCodeFromBrowser(oauth2Client, resolved.redirectPort)
   process.stderr.write(pc.dim('Got authorization code, exchanging for tokens...') + '\n')
 
   const { tokens } = await oauth2Client.getToken(code)
@@ -297,12 +314,12 @@ export async function login(): Promise<{ email: string; appId: string; client: G
   // Upsert account in DB
   const prisma = await getPrisma()
   await prisma.account.upsert({
-    where: { email_appId: { email, appId: CLIENT_ID } },
-    create: { email, appId: CLIENT_ID, accountStatus: 'active', tokens: JSON.stringify(tokens), createdAt: new Date(), updatedAt: new Date() },
+    where: { email_appId: { email, appId: resolved.clientId } },
+    create: { email, appId: resolved.clientId, accountStatus: 'active', tokens: JSON.stringify(tokens), createdAt: new Date(), updatedAt: new Date() },
     update: { tokens: JSON.stringify(tokens), updatedAt: new Date() },
   })
 
-  return { email, appId: CLIENT_ID, client }
+  return { email, appId: resolved.clientId, client }
 }
 
 // ---------------------------------------------------------------------------
