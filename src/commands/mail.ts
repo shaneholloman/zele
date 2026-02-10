@@ -26,7 +26,6 @@ export function registerMailCommands(cli: Goke) {
     .option('--max [max]', 'Max results per page (default: 20)')
     .option('--page <page>', 'Pagination token')
     .option('--label <label>', 'Filter by label name')
-    .option('--no-cache', 'Skip cache')
     .action(async (options) => {
       const folder = options.folder ?? 'inbox'
       const max = options.max ? Number(options.max) : 20
@@ -45,7 +44,6 @@ export function registerMailCommands(cli: Goke) {
             maxResults: max,
             labelIds: options.label ? [options.label] : undefined,
             pageToken: options.page,
-            noCache: options.noCache,
           })
           return { email, result }
         }),
@@ -113,7 +111,6 @@ export function registerMailCommands(cli: Goke) {
             query,
             maxResults: max,
             pageToken: options.page,
-            noCache: true, // searches are always fresh
           })
           return { email, result }
         }),
@@ -163,12 +160,11 @@ export function registerMailCommands(cli: Goke) {
   cli
     .command('mail read <threadId>', 'Read a full email thread')
     .option('--raw', 'Show raw message (first message only)')
-    .option('--no-cache', 'Skip cache')
     .action(async (threadId, options) => {
       const { client } = await getClient(options.account)
 
       if (options.raw) {
-        const { parsed: thread } = await client.getThread({ threadId, noCache: true })
+        const { parsed: thread } = await client.getThread({ threadId })
         if (thread.messages.length === 0) {
           out.hint('No messages in thread')
           return
@@ -178,7 +174,7 @@ export function registerMailCommands(cli: Goke) {
         return
       }
 
-      const { parsed: thread } = await client.getThread({ threadId, noCache: options.noCache })
+      const { parsed: thread } = await client.getThread({ threadId })
 
       if (thread.messages.length === 0) {
         out.hint('No messages in thread')

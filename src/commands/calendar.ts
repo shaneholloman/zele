@@ -22,13 +22,12 @@ export function registerCalendarCommands(cli: Goke) {
 
   cli
     .command('cal list', 'List calendars')
-    .option('--no-cache', 'Skip cache')
     .action(async (options) => {
       const clients = await getCalendarClients(options.account)
 
       const settled = await Promise.allSettled(
         clients.map(async ({ email, client }) => {
-          const calendars = await client.listCalendars({ noCache: options.noCache })
+          const calendars = await client.listCalendars()
           return { email, calendars }
         }),
       )
@@ -119,7 +118,7 @@ export function registerCalendarCommands(cli: Goke) {
 
           if (options.all) {
             // Fetch from all calendars
-            const calendars = await client.listCalendars({ noCache: options.noCache })
+            const calendars = await client.listCalendars()
             const allEvents: CalendarEvent[] = []
 
             const perCalResults = await Promise.allSettled(

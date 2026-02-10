@@ -270,14 +270,12 @@ export class GmailClient {
     maxResults = 25,
     labelIds,
     pageToken,
-    noCache = false,
   }: {
     query?: string
     folder?: string
     maxResults?: number
     labelIds?: string[]
     pageToken?: string
-    noCache?: boolean
   } = {}): Promise<ThreadListResult> {
     const { q, resolvedLabelIds } = this.buildSearchParams(folder, query, labelIds)
 
@@ -297,13 +295,11 @@ export class GmailClient {
     const hydrated = await mapConcurrent(rawThreads, async (t) => {
       if (!t.id) return null
 
-      if (!noCache) {
-        const cached = await this.getCachedThread(t.id)
-        if (cached && (!t.historyId || !cached.historyId || t.historyId === cached.historyId)) {
-          return {
-            parsed: GmailClient.parseRawThreadListItem(cached),
-            raw: cached,
-          }
+      const cached = await this.getCachedThread(t.id)
+      if (cached && (!t.historyId || !cached.historyId || t.historyId === cached.historyId)) {
+        return {
+          parsed: GmailClient.parseRawThreadListItem(cached),
+          raw: cached,
         }
       }
 
@@ -316,10 +312,8 @@ export class GmailClient {
           }),
         )
 
-        if (!noCache) {
-          const parsed = GmailClient.parseRawThread(detail.data)
-          await this.cacheThreadData(t.id, detail.data, parsed)
-        }
+        const parsed = GmailClient.parseRawThread(detail.data)
+        await this.cacheThreadData(t.id, detail.data, parsed)
 
         return {
           parsed: GmailClient.parseRawThreadListItem(detail.data),
@@ -341,13 +335,11 @@ export class GmailClient {
     return result
   }
 
-  async getThread({ threadId, noCache = false }: { threadId: string; noCache?: boolean }): Promise<ThreadResult> {
+  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult> {
     // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedThread(threadId)
-      if (cached) {
-        return { parsed: GmailClient.parseRawThread(cached), raw: cached }
-      }
+    const cached = await this.getCachedThread(threadId)
+    if (cached) {
+      return { parsed: GmailClient.parseRawThread(cached), raw: cached }
     }
 
     const res = await withRetry(() =>
@@ -362,9 +354,7 @@ export class GmailClient {
     const result: ThreadResult = { parsed, raw: res.data }
 
     // Write cache
-    if (!noCache) {
-      await this.cacheThreadData(threadId, res.data, parsed)
-    }
+    await this.cacheThreadData(threadId, res.data, parsed)
 
     return result
   }
@@ -725,13 +715,11 @@ export class GmailClient {
   // Labels CRUD
   // =========================================================================
 
-  async listLabels({ noCache = false }: { noCache?: boolean } = {}) {
+  async listLabels() {
     // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedLabels()
-      if (cached) {
-        return { parsed: GmailClient.parseRawLabels(cached), raw: cached }
-      }
+    const cached = await this.getCachedLabels()
+    if (cached) {
+      return { parsed: GmailClient.parseRawLabels(cached), raw: cached }
     }
 
     const res = await withRetry(() =>
@@ -741,9 +729,7 @@ export class GmailClient {
     const rawLabels = res.data.labels ?? []
 
     // Write cache
-    if (!noCache) {
-      await this.cacheLabelsData(rawLabels)
-    }
+    await this.cacheLabelsData(rawLabels)
 
     return { parsed: GmailClient.parseRawLabels(rawLabels), raw: rawLabels }
   }
@@ -897,12 +883,10 @@ export class GmailClient {
   // Account / profile
   // =========================================================================
 
-  async getProfile({ noCache = false }: { noCache?: boolean } = {}) {
+  async getProfile() {
     // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedProfile()
-      if (cached) return cached
-    }
+    const cached = await this.getCachedProfile()
+    if (cached) return cached
 
     const res = await withRetry(() =>
       this.gmail.users.getProfile({ userId: 'me' }),
@@ -916,9 +900,7 @@ export class GmailClient {
     }
 
     // Write cache
-    if (!noCache) {
-      await this.cacheProfileData(profile)
-    }
+    await this.cacheProfileData(profile)
 
     return profile
   }

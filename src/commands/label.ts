@@ -15,14 +15,13 @@ export function registerLabelCommands(cli: Goke) {
 
   cli
     .command('label list', 'List all labels')
-    .option('--no-cache', 'Skip cache')
     .action(async (options) => {
       const clients = await getClients(options.account)
 
       // Fetch from all accounts concurrently, tolerating individual failures
       const settled = await Promise.allSettled(
         clients.map(async ({ email, client }) => {
-          const { parsed: labels } = await client.listLabels({ noCache: options.noCache })
+          const { parsed: labels } = await client.listLabels()
           return { email, labels }
         }),
       )

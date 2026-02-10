@@ -10,14 +10,13 @@ import * as out from '../output.js'
 export function registerProfileCommands(cli: Goke) {
   cli
     .command('profile', 'Show Gmail account info')
-    .option('--no-cache', 'Skip cache')
     .action(async (options) => {
       const clients = await getClients(options.account)
 
       // Fetch all accounts concurrently, tolerating individual failures
       const settled = await Promise.allSettled(
         clients.map(async ({ client }) => {
-          const profile = await client.getProfile({ noCache: options.noCache })
+          const profile = await client.getProfile()
           // Always fetch aliases fresh
           const aliases = await client.getEmailAliases()
           return { profile, aliases }

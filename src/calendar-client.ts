@@ -417,12 +417,10 @@ export class CalendarClient {
   // Calendar list
   // =========================================================================
 
-  async listCalendars({ noCache = false }: { noCache?: boolean } = {}): Promise<CalendarListItem[]> {
+  async listCalendars(): Promise<CalendarListItem[]> {
     // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedCalendarList()
-      if (cached) return cached
-    }
+    const cached = await this.getCachedCalendarList()
+    if (cached) return cached
 
     const calendars = await this.fetchDAVCalendars()
 
@@ -449,9 +447,7 @@ export class CalendarClient {
     })
 
     // Write cache
-    if (!noCache) {
-      await this.cacheCalendarListData(result)
-    }
+    await this.cacheCalendarListData(result)
 
     return result
   }

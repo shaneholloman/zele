@@ -1,6 +1,6 @@
 {
   "name": "zele",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Gmail CLI — manage email from your terminal",
   "type": "module",
   "main": "dist/cli.js",
