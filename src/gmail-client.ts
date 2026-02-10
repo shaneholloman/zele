@@ -1,7 +1,9 @@
 // Gmail API client for CLI/TUI use.
 // Wraps the @googleapis/gmail SDK with structured methods, object params, and inferred return types.
 // No abstract interfaces, no RPC layer — just a concrete class for Gmail.
-// Cache is built into the client: read methods check cache first, mutations invalidate.
+// Cache is built into the client for expensive read paths.
+// List/search entry-point calls always fetch fresh IDs and then reuse per-thread cache
+// to avoid repeated N+1 hydration calls.
 // Raw Google API responses are stored in the cache (gmail_v1.Schema$*) so the cache
 // is resilient to changes in our own parsed types. Parsing happens at read time.
 // When account is not provided (bootstrap/login flow), cache is skipped entirely.
@@ -134,11 +136,9 @@ function encodeBase64Url(data: string | Buffer) {
 
 // TTL constants in milliseconds
 const TTL = {
-  THREAD_LIST: 5 * 60 * 1000, // 5 minutes
   THREAD: 30 * 60 * 1000, // 30 minutes
   LABELS: 30 * 60 * 1000, // 30 minutes
   PROFILE: 24 * 60 * 60 * 1000, // 24 hours
-  LABEL_COUNTS: 2 * 60 * 1000, // 2 minutes
 } as const
 
 function isExpired(createdAt: Date, ttlMs: number): boolean {
@@ -163,54 +163,8 @@ export class GmailClient {
     return this.account !== null
   }
 
-  private async getCachedThreadList(
-    params: { folder?: string; query?: string; maxResults?: number; labelIds?: string[]; pageToken?: string },
-  ): Promise<{ rawThreads: gmail_v1.Schema$Thread[]; nextPageToken: string | null; resultSizeEstimate: number } | undefined> {
-    if (!this.cacheEnabled) return undefined
-    const prisma = await getPrisma()
-    const row = await prisma.threadList.findUnique({
-      where: {
-        email_appId_folder_query_labelIds_pageToken_maxResults: {
-          email: this.account!.email,
-          appId: this.account!.appId,
-          folder: params.folder ?? '',
-          query: params.query ?? '',
-          labelIds: params.labelIds?.join(',') ?? '',
-          pageToken: params.pageToken ?? '',
-          maxResults: params.maxResults ?? 0,
-        },
-      },
-    })
-    if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
-    return JSON.parse(row.rawData) as { rawThreads: gmail_v1.Schema$Thread[]; nextPageToken: string | null; resultSizeEstimate: number }
-  }
-
-  private async cacheThreadList(
-    params: { folder?: string; query?: string; maxResults?: number; labelIds?: string[]; pageToken?: string },
-    data: { rawThreads: gmail_v1.Schema$Thread[]; nextPageToken: string | null; resultSizeEstimate: number },
-  ): Promise<void> {
-    if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    const where = {
-      email: this.account!.email,
-      appId: this.account!.appId,
-      folder: params.folder ?? '',
-      query: params.query ?? '',
-      labelIds: params.labelIds?.join(',') ?? '',
-      pageToken: params.pageToken ?? '',
-      maxResults: params.maxResults ?? 0,
-    }
-    await prisma.threadList.upsert({
-      where: { email_appId_folder_query_labelIds_pageToken_maxResults: where },
-      create: { ...where, rawData: JSON.stringify(data), ttlMs: TTL.THREAD_LIST, createdAt: new Date() },
-      update: { rawData: JSON.stringify(data), ttlMs: TTL.THREAD_LIST, createdAt: new Date() },
-    })
-  }
-
   async invalidateThreadLists(): Promise<void> {
-    if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.threadList.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId } })
+    // Thread list results are no longer cached; keep method for call-site compatibility.
   }
 
   private async getCachedThread(threadId: string): Promise<gmail_v1.Schema$Thread | undefined> {
@@ -284,28 +238,8 @@ export class GmailClient {
     await prisma.label.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId } })
   }
 
-  private async getCachedLabelCounts(): Promise<{ raw: gmail_v1.Schema$Label[]; archiveEstimate: number | null } | undefined> {
-    if (!this.cacheEnabled) return undefined
-    const prisma = await getPrisma()
-    const row = await prisma.labelCount.findUnique({ where: { email_appId: { email: this.account!.email, appId: this.account!.appId } } })
-    if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
-    return JSON.parse(row.rawData) as { raw: gmail_v1.Schema$Label[]; archiveEstimate: number | null }
-  }
-
-  private async cacheLabelCountsData(raw: gmail_v1.Schema$Label[], archiveEstimate: number | null): Promise<void> {
-    if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.labelCount.upsert({
-      where: { email_appId: { email: this.account!.email, appId: this.account!.appId } },
-      create: { email: this.account!.email, appId: this.account!.appId, rawData: JSON.stringify({ raw, archiveEstimate }), ttlMs: TTL.LABEL_COUNTS, createdAt: new Date() },
-      update: { rawData: JSON.stringify({ raw, archiveEstimate }), ttlMs: TTL.LABEL_COUNTS, createdAt: new Date() },
-    })
-  }
-
   async invalidateLabelCounts(): Promise<void> {
-    if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.labelCount.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId } })
+    // Label count results are no longer cached; keep method for call-site compatibility.
   }
 
   private async getCachedProfile(): Promise<{ emailAddress: string; messagesTotal: number; threadsTotal: number; historyId: string } | undefined> {
@@ -345,21 +279,6 @@ export class GmailClient {
     pageToken?: string
     noCache?: boolean
   } = {}): Promise<ThreadListResult> {
-    const cacheParams = { folder, query, maxResults, labelIds, pageToken }
-
-    // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedThreadList(cacheParams)
-      if (cached) {
-        return {
-          threads: cached.rawThreads.map((raw) => GmailClient.parseRawThreadListItem(raw)),
-          rawThreads: cached.rawThreads,
-          nextPageToken: cached.nextPageToken,
-          resultSizeEstimate: cached.resultSizeEstimate,
-        }
-      }
-    }
-
     const { q, resolvedLabelIds } = this.buildSearchParams(folder, query, labelIds)
 
     const res = await withRetry(() =>
@@ -377,17 +296,33 @@ export class GmailClient {
     // Hydrate with metadata — collect both raw and parsed
     const hydrated = await mapConcurrent(rawThreads, async (t) => {
       if (!t.id) return null
+
+      if (!noCache) {
+        const cached = await this.getCachedThread(t.id)
+        if (cached && (!t.historyId || !cached.historyId || t.historyId === cached.historyId)) {
+          return {
+            parsed: GmailClient.parseRawThreadListItem(cached),
+            raw: cached,
+          }
+        }
+      }
+
       try {
         const detail = await withRetry(() =>
           this.gmail.users.threads.get({
             userId: 'me',
             id: t.id!,
-            format: 'metadata',
-            metadataHeaders: ['Subject', 'From', 'Date', 'To'],
+            format: 'full',
           }),
         )
+
+        if (!noCache) {
+          const parsed = GmailClient.parseRawThread(detail.data)
+          await this.cacheThreadData(t.id, detail.data, parsed)
+        }
+
         return {
-          parsed: this.parseThreadListItem(t.id, detail.data),
+          parsed: GmailClient.parseRawThreadListItem(detail.data),
           raw: detail.data,
         }
       } catch {
@@ -401,15 +336,6 @@ export class GmailClient {
       rawThreads: valid.map((t) => t.raw),
       nextPageToken: res.data.nextPageToken ?? null,
       resultSizeEstimate: res.data.resultSizeEstimate ?? 0,
-    }
-
-    // Write cache
-    if (!noCache) {
-      await this.cacheThreadList(cacheParams, {
-        rawThreads: result.rawThreads,
-        nextPageToken: result.nextPageToken,
-        resultSizeEstimate: result.resultSizeEstimate,
-      })
     }
 
     return result
@@ -890,18 +816,8 @@ export class GmailClient {
   // Label counts (unread counts per folder/label)
   // =========================================================================
 
-  async getLabelCounts({ noCache = false }: { noCache?: boolean } = {}) {
-    // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedLabelCounts()
-      if (cached) {
-        return {
-          parsed: GmailClient.parseRawLabelCounts(cached.raw, cached.archiveEstimate),
-          raw: cached.raw,
-          archiveEstimate: cached.archiveEstimate,
-        }
-      }
-    }
+  async getLabelCounts() {
+    // Always fresh: label counts are user-facing live data.
 
     // Fetch label counts and archive count concurrently
     const [labelsResult, archiveRes] = await Promise.all([
@@ -949,11 +865,6 @@ export class GmailClient {
     }
 
     const archiveEstimate = archiveRes ? Number(archiveRes.data.resultSizeEstimate ?? 0) : null
-
-    // Write cache
-    if (!noCache) {
-      await this.cacheLabelCountsData(rawDetails, archiveEstimate)
-    }
 
     return { parsed: result, raw: rawDetails, archiveEstimate }
   }

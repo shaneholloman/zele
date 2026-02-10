@@ -25,38 +25,13 @@ model Account {
   createdAt     DateTime
   updatedAt     DateTime @updatedAt
 
-  threadLists    ThreadList[]
   threads        Thread[]
   labels         Label?
-  labelCounts    LabelCount?
   profiles       Profile?
   syncStates     SyncState[]
   calendarLists  CalendarList?
-  calendarEvents CalendarEvent[]
 
   @@id([email, appId])
-}
-
-// Caches thread list/search responses per account and query parameters.
-// Used for fast list/search rendering and reduced Gmail API calls.
-// rawData stores the raw Google gmail_v1.Schema$Thread[] metadata responses
-// so the cache is resilient to changes in our own ThreadListResult type.
-model ThreadList {
-  id         Int      @id @default(autoincrement())
-  email      String
-  appId      String
-  folder     String
-  query      String
-  labelIds   String
-  pageToken  String
-  maxResults Int
-  rawData    String // raw Google API response JSON (gmail_v1.Schema$Thread[])
-  ttlMs      Int
-  createdAt  DateTime
-
-  account Account @relation(fields: [email, appId], references: [email, appId], onDelete: Cascade)
-
-  @@unique([email, appId, folder, query, labelIds, pageToken, maxResults])
 }
 
 // Caches hydrated thread payloads per account + thread ID.
@@ -102,22 +77,6 @@ model Label {
   @@id([email, appId])
 }
 
-// Caches unread counts per label per account.
-// Used by label counts to avoid recomputing on every invocation.
-// rawData stores the raw Google gmail_v1.Schema$Label[] detail responses
-// (including messagesTotal/threadsUnread counts).
-model LabelCount {
-  email     String
-  appId     String
-  rawData   String // raw Google API response JSON (gmail_v1.Schema$Label[] with counts)
-  ttlMs     Int
-  createdAt DateTime
-
-  account Account @relation(fields: [email, appId], references: [email, appId], onDelete: Cascade)
-
-  @@id([email, appId])
-}
-
 // Caches Gmail profile payload per account (totals/history id).
 // Used by profile command and account metadata lookups.
 // Fully flattened — no JSON blob needed, only 4 fields from Google.
@@ -149,28 +108,6 @@ model CalendarList {
   account Account @relation(fields: [email, appId], references: [email, appId], onDelete: Cascade)
 
   @@id([email, appId])
-}
-
-// Caches calendar event list responses per account and query parameters.
-// Used for fast cal events rendering and reduced Calendar API calls.
-// rawData stores parsed EventListResult JSON (not raw tsdav — parsed at write time).
-model CalendarEvent {
-  id         Int      @id @default(autoincrement())
-  email      String
-  appId      String
-  calendarId String
-  timeMin    String
-  timeMax    String
-  query      String
-  maxResults Int
-  pageToken  String
-  rawData    String // JSON blob of EventListResult
-  ttlMs      Int
-  createdAt  DateTime
-
-  account Account @relation(fields: [email, appId], references: [email, appId], onDelete: Cascade)
-
-  @@unique([email, appId, calendarId, timeMin, timeMax, query, maxResults, pageToken])
 }
 
 // Stores persistent per-account sync metadata as generic key/value pairs.

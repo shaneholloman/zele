@@ -87,7 +87,6 @@ export function registerCalendarCommands(cli: Goke) {
     .option('--query <query>', 'Free text search')
     .option('--max [max]', 'Max results (default: 20)')
     .option('--page <page>', 'Pagination token')
-    .option('--no-cache', 'Skip cache')
     .action(async (options) => {
       const max = options.max ? Number(options.max) : 20
       const calendarId = options.calendar ?? 'primary'
@@ -131,7 +130,6 @@ export function registerCalendarCommands(cli: Goke) {
                   timeMax,
                   query: options.query,
                   maxResults: max,
-                  noCache: options.noCache,
                 })
                 return r.events.map((e) => ({ ...e, calendarId: cal.id }))
               }),
@@ -158,7 +156,6 @@ export function registerCalendarCommands(cli: Goke) {
               query: options.query,
               maxResults: max,
               pageToken: options.page,
-              noCache: options.noCache,
             })
           }
 

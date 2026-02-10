@@ -144,14 +144,13 @@ export function registerLabelCommands(cli: Goke) {
 
   cli
     .command('label counts', 'Show unread counts per label')
-    .option('--no-cache', 'Skip cache')
     .action(async (options) => {
       const clients = await getClients(options.account)
 
       // Fetch from all accounts concurrently, tolerating individual failures
       const settled = await Promise.allSettled(
         clients.map(async ({ email, client }) => {
-          const { parsed: counts } = await client.getLabelCounts({ noCache: options.noCache })
+          const { parsed: counts } = await client.getLabelCounts()
           return { email, counts }
         }),
       )

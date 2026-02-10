@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- **Cache:** Always fetch fresh data for `mail list`, `mail search`, `label counts`, and `cal events` to avoid stale CLI output
+- **Cache:** Keep per-thread cache for expensive N+1 thread hydration in mail list/search and reuse cached thread payloads when history IDs match
+- **Database:** Remove obsolete cache tables for thread-list, calendar-event-list, and label-count result caching
+- **CLI:** Remove ineffective `--no-cache` flags from commands that are now always fresh (`label counts`, `cal events`)
+
 ## 0.3.0
 
 - **Mail:** Add `mail watch` command for polling new emails using Gmail History API (incremental sync)

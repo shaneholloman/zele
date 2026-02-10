@@ -9,21 +9,6 @@ CREATE TABLE IF NOT EXISTS "Account" (
 
     PRIMARY KEY ("email", "appId")
 );
-CREATE TABLE IF NOT EXISTS "ThreadList" (
-    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "email" TEXT NOT NULL,
-    "appId" TEXT NOT NULL,
-    "folder" TEXT NOT NULL,
-    "query" TEXT NOT NULL,
-    "labelIds" TEXT NOT NULL,
-    "pageToken" TEXT NOT NULL,
-    "maxResults" INTEGER NOT NULL,
-    "rawData" TEXT NOT NULL,
-    "ttlMs" INTEGER NOT NULL,
-    "createdAt" DATETIME NOT NULL,
-    CONSTRAINT "ThreadList_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
-);
-CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE IF NOT EXISTS "Thread" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     "email" TEXT NOT NULL,
@@ -43,6 +28,7 @@ CREATE TABLE IF NOT EXISTS "Thread" (
     "createdAt" DATETIME NOT NULL,
     CONSTRAINT "Thread_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
 );
+CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE IF NOT EXISTS "Label" (
     "email" TEXT NOT NULL,
     "appId" TEXT NOT NULL,
@@ -52,16 +38,6 @@ CREATE TABLE IF NOT EXISTS "Label" (
 
     PRIMARY KEY ("email", "appId"),
     CONSTRAINT "Label_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
-);
-CREATE TABLE IF NOT EXISTS "LabelCount" (
-    "email" TEXT NOT NULL,
-    "appId" TEXT NOT NULL,
-    "rawData" TEXT NOT NULL,
-    "ttlMs" INTEGER NOT NULL,
-    "createdAt" DATETIME NOT NULL,
-
-    PRIMARY KEY ("email", "appId"),
-    CONSTRAINT "LabelCount_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
 );
 CREATE TABLE IF NOT EXISTS "Profile" (
     "email" TEXT NOT NULL,
@@ -86,21 +62,6 @@ CREATE TABLE IF NOT EXISTS "CalendarList" (
     PRIMARY KEY ("email", "appId"),
     CONSTRAINT "CalendarList_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE TABLE IF NOT EXISTS "CalendarEvent" (
-    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "email" TEXT NOT NULL,
-    "appId" TEXT NOT NULL,
-    "calendarId" TEXT NOT NULL,
-    "timeMin" TEXT NOT NULL,
-    "timeMax" TEXT NOT NULL,
-    "query" TEXT NOT NULL,
-    "maxResults" INTEGER NOT NULL,
-    "pageToken" TEXT NOT NULL,
-    "rawData" TEXT NOT NULL,
-    "ttlMs" INTEGER NOT NULL,
-    "createdAt" DATETIME NOT NULL,
-    CONSTRAINT "CalendarEvent_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
-);
 CREATE TABLE IF NOT EXISTS "SyncState" (
     "email" TEXT NOT NULL,
     "appId" TEXT NOT NULL,
@@ -110,6 +71,4 @@ CREATE TABLE IF NOT EXISTS "SyncState" (
     PRIMARY KEY ("email", "appId", "key"),
     CONSTRAINT "SyncState_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "ThreadList_email_appId_folder_query_labelIds_pageToken_maxResults_key" ON "ThreadList"("email", "appId", "folder", "query", "labelIds", "pageToken", "maxResults");
 CREATE UNIQUE INDEX "Thread_email_appId_threadId_key" ON "Thread"("email", "appId", "threadId");
-CREATE UNIQUE INDEX "CalendarEvent_email_appId_calendarId_timeMin_timeMax_query_maxResults_pageToken_key" ON "CalendarEvent"("email", "appId", "calendarId", "timeMin", "timeMax", "query", "maxResults", "pageToken");

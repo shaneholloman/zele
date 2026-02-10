@@ -2,7 +2,8 @@
 // Uses tsdav for CalDAV protocol and ts-ics for typed iCalendar parse/generate.
 // Auth: passes a Bearer token via headers (reuses existing google-auth-library OAuth2).
 // Google CalDAV endpoint: https://apidata.googleusercontent.com/caldav/v2/
-// Cache is built into the client: read methods check cache first, mutations invalidate.
+// Cache is built into the client for stable metadata lookups (calendar list/timezone).
+// Event listing is always fresh so CLI output reflects newly created/updated events.
 // Raw tsdav responses are stored in the cache so the cache is resilient to changes
 // in our own parsed types. Parsing happens at read time.
 
@@ -311,10 +312,8 @@ function extractTimezone(tz?: string): string {
 
 const GOOGLE_CALDAV_URL = 'https://apidata.googleusercontent.com/caldav/v2/'
 
-// TTL constants in milliseconds
 const TTL = {
   CALENDAR_LIST: 30 * 60 * 1000, // 30 minutes
-  CALENDAR_EVENTS: 5 * 60 * 1000, // 5 minutes
 } as const
 
 function isExpired(createdAt: Date, ttlMs: number): boolean {
@@ -368,55 +367,9 @@ export class CalendarClient {
     await prisma.calendarList.deleteMany({ where: this.account })
   }
 
-  private async getCachedCalendarEvents(
-    params: { calendarId?: string; timeMin?: string; timeMax?: string; query?: string; maxResults?: number; pageToken?: string },
-  ): Promise<EventListResult | undefined> {
-    const prisma = await getPrisma()
-    const row = await prisma.calendarEvent.findUnique({
-      where: {
-        email_appId_calendarId_timeMin_timeMax_query_maxResults_pageToken: {
-          ...this.account,
-          calendarId: params.calendarId ?? '',
-          timeMin: params.timeMin ?? '',
-          timeMax: params.timeMax ?? '',
-          query: params.query ?? '',
-          maxResults: params.maxResults ?? 0,
-          pageToken: params.pageToken ?? '',
-        },
-      },
-    })
-    if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
-    return JSON.parse(row.rawData) as EventListResult
-  }
-
-  private async cacheCalendarEventsData(
-    params: { calendarId?: string; timeMin?: string; timeMax?: string; query?: string; maxResults?: number; pageToken?: string },
-    data: EventListResult,
-  ): Promise<void> {
-    const prisma = await getPrisma()
-    const where = {
-      ...this.account,
-      calendarId: params.calendarId ?? '',
-      timeMin: params.timeMin ?? '',
-      timeMax: params.timeMax ?? '',
-      query: params.query ?? '',
-      maxResults: params.maxResults ?? 0,
-      pageToken: params.pageToken ?? '',
-    }
-    await prisma.calendarEvent.upsert({
-      where: { email_appId_calendarId_timeMin_timeMax_query_maxResults_pageToken: where },
-      create: { ...where, rawData: JSON.stringify(data), ttlMs: TTL.CALENDAR_EVENTS, createdAt: new Date() },
-      update: { rawData: JSON.stringify(data), ttlMs: TTL.CALENDAR_EVENTS, createdAt: new Date() },
-    })
-  }
-
   async invalidateCalendarEvents(calendarId?: string): Promise<void> {
-    const prisma = await getPrisma()
-    if (calendarId) {
-      await prisma.calendarEvent.deleteMany({ where: { ...this.account, calendarId } })
-    } else {
-      await prisma.calendarEvent.deleteMany({ where: this.account })
-    }
+    // Event list results are no longer cached; keep method for call-site compatibility.
+    void calendarId
   }
 
   // =========================================================================
@@ -537,7 +490,6 @@ export class CalendarClient {
     query,
     maxResults = 20,
     pageToken,
-    noCache = false,
   }: {
     calendarId?: string
     timeMin?: string
@@ -545,15 +497,8 @@ export class CalendarClient {
     query?: string
     maxResults?: number
     pageToken?: string
-    noCache?: boolean
   } = {}): Promise<EventListResult> {
-    const cacheParams = { calendarId, timeMin, timeMax, query, maxResults, pageToken }
-
-    // Check cache
-    if (!noCache) {
-      const cached = await this.getCachedCalendarEvents(cacheParams)
-      if (cached) return cached
-    }
+    // Always fresh: event lists are user-facing live data.
 
     const cal = await this.resolveCalendar(calendarId)
     const tz = await this.getTimezone(calendarId)
@@ -591,11 +536,6 @@ export class CalendarClient {
       events: events.slice(0, maxResults),
       nextPageToken: null,
       timezone: tz,
-    }
-
-    // Write cache
-    if (!noCache) {
-      await this.cacheCalendarEventsData(cacheParams, result)
     }
 
     return result
