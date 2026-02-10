@@ -6,6 +6,14 @@ to run the cli locally use `tsx src/cli.ts`
 
 do not add manual type annotations to `.action(async ...)` parameters in goke commands; rely on goke option inference.
 
+## mail tui 
+
+the mail-tui.tsx file uses termcast. which is a raycast extension API re implementation for the terminal. it implements basically all raycast APIs but renders as a TUI. termcast command is run globally. running termcast dev will show the tui and refresh it on file changes. global termcast is linked to the kimaki termcast project. you can apply fixes there finding it with kimaki project list if needed.
+
+to try out and test the tui you must use tuistory. it is a cli to launch, control and see long running tui processes like ours. it also has a js api like playwright to test tui applications.
+
+you must do tuistory --help to see how to use it. this is the only way to try out the mail-tui file. after changes made to that file always try out changes using tuistory cli. or adding test that use the tuistory js api. to read tuistory js api opensrc it and read the readme file.
+
 ## database
 
 zele uses a single SQLite database at `~/.zele/zele.db` as the source of truth for CLI state.
