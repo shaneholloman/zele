@@ -7,3 +7,4 @@ opensrc/
 *.log
 src/generated/
 dev.db
+tmp
