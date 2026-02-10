@@ -180,33 +180,55 @@ export function registerMailCommands(cli: Goke) {
         return
       }
 
+      const w = Math.min(process.stdout.columns || 72, 72)
+      const rule = pc.dim('─'.repeat(w))
+
       // Render thread header
       process.stdout.write(pc.bold(thread.subject) + '\n')
-      process.stdout.write(pc.dim(`Thread ID: ${thread.id} | ${thread.messageCount} message(s)`) + '\n')
-      process.stdout.write(pc.dim('─'.repeat(60)) + '\n\n')
+      // Collect unique participants
+      const participants = new Map<string, string>()
+      for (const msg of thread.messages) {
+        participants.set(msg.from.email, msg.from.name || msg.from.email)
+        for (const r of msg.to) participants.set(r.email, r.name || r.email)
+      }
+      const participantStr = [...participants.values()].join(', ')
+      process.stdout.write(pc.dim(`${thread.messageCount} message(s) · ${participantStr}`) + '\n')
+      process.stdout.write(pc.dim(`ID: ${thread.id}`) + '\n')
+      process.stdout.write(rule + '\n\n')
 
       // Render each message
       for (const msg of thread.messages) {
         const fromStr = out.formatSender(msg.from)
         const dateStr = out.formatDate(msg.date)
-        const flags = out.formatFlags(msg)
 
-        process.stdout.write(pc.bold(fromStr) + (flags ? ` ${flags}` : '') + '\n')
-        process.stdout.write(pc.dim(`To: ${msg.to.map((t) => t.email).join(', ')}`) + '\n')
+        // Flags as dim tags
+        const flagParts: string[] = []
+        if (msg.unread) flagParts.push(pc.yellow('[unread]'))
+        if (msg.starred) flagParts.push(pc.yellow('[starred]'))
+        const flagStr = flagParts.length > 0 ? ' ' + flagParts.join(' ') : ''
+
+        process.stdout.write(pc.bold(`From: `) + fromStr + flagStr + '\n')
+        process.stdout.write(pc.dim(`  To: ${msg.to.map((t) => t.email).join(', ')}`) + '\n')
         if (msg.cc && msg.cc.length > 0) {
-          process.stdout.write(pc.dim(`Cc: ${msg.cc.map((c) => c.email).join(', ')}`) + '\n')
+          process.stdout.write(pc.dim(`  Cc: ${msg.cc.map((c) => c.email).join(', ')}`) + '\n')
         }
-        process.stdout.write(pc.dim(`Date: ${dateStr} | ID: ${msg.id}`) + '\n')
+        process.stdout.write(pc.dim(`Date: ${dateStr}`) + '\n')
 
         if (msg.attachments.length > 0) {
-          process.stdout.write(pc.dim(`Attachments: ${msg.attachments.map((a) => a.filename).join(', ')}`) + '\n')
+          const attList = msg.attachments.map((a) => {
+            const size = a.size < 1024 ? `${a.size} B`
+              : a.size < 1048576 ? `${(a.size / 1024).toFixed(1)} KB`
+              : `${(a.size / 1048576).toFixed(1)} MB`
+            return `${a.filename} (${size})`
+          })
+          process.stdout.write(pc.dim(`Attachments: ${attList.join(', ')}`) + '\n')
         }
 
         process.stdout.write('\n')
 
         const body = out.renderEmailBody(msg.body, msg.mimeType)
         process.stdout.write(body + '\n')
-        process.stdout.write('\n' + pc.dim('─'.repeat(60)) + '\n\n')
+        process.stdout.write('\n' + rule + '\n\n')
       }
     })
 

@@ -10,6 +10,7 @@
 
 import yaml from 'js-yaml'
 import TurndownService from 'turndown'
+import { remark } from 'remark'
 import pc from 'picocolors'
 
 // ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ turndown.addRule('tracking-pixels', {
   replacement: () => '',
 })
 
-// Strip <style> and <head> tags
+// Strip <style>, <head>, <script> tags
 turndown.addRule('strip-style', {
   filter: ['style', 'head', 'script'],
   replacement: () => '',
@@ -58,6 +59,79 @@ turndown.addRule('images', {
 })
 
 // ---------------------------------------------------------------------------
+// Email-specific turndown rules
+// Email HTML heavily relies on layout tables. These are not data tables —
+// they're used for positioning (like a 600px centered wrapper). We unwrap
+// them so only the cell content survives as markdown.
+// ---------------------------------------------------------------------------
+
+// Strip common quoted-reply wrappers from Gmail/Outlook.
+turndown.addRule('quoted-replies', {
+  filter: (node) => {
+    const hasClass = (name: string) => {
+      const cls = node.getAttribute('class') ?? ''
+      return new RegExp(`(^|\\s)${name}(\\s|$)`).test(cls)
+    }
+
+    if (node.nodeName === 'DIV') {
+      if (hasClass('gmail_quote') || hasClass('gmail_extra')) return true
+      const id = node.getAttribute('id') ?? ''
+      if (id === 'appendonsend' || id === 'divRplyFwdMsg') return true
+    }
+    if (node.nodeName === 'BLOCKQUOTE') {
+      const type = node.getAttribute('type') ?? ''
+      if (type === 'cite') return true
+    }
+    return false
+  },
+  replacement: () => '',
+})
+
+// Unwrap layout tables: tables used for email layout (width, align, role="presentation")
+// just pass through their text content instead of rendering as markdown tables.
+turndown.addRule('layout-tables', {
+  filter: (node) => {
+    if (node.nodeName !== 'TABLE') return false
+    const role = (node.getAttribute('role') ?? '').toLowerCase()
+    if (role === 'presentation') return true
+
+    // Heuristic: tables with explicit width or align are almost always layout
+    const width = node.getAttribute('width') ?? ''
+    const align = node.getAttribute('align') ?? ''
+    if (width || align) return true
+
+    // Tables with cellpadding/cellspacing/border="0" are layout tables
+    const border = (node.getAttribute('border') ?? '').trim()
+    const cellpadding = node.getAttribute('cellpadding') ?? ''
+    const cellspacing = node.getAttribute('cellspacing') ?? ''
+    if (border === '0' || cellpadding || cellspacing) return true
+
+    return false
+  },
+  replacement: (content) => {
+    // _content already has the inner text converted by turndown
+    return content
+  },
+})
+
+// Strip hidden/preheader elements.
+turndown.addRule('hidden-elements', {
+  filter: (node) => {
+    const style = node.getAttribute('style') ?? ''
+    if (/display\s*:\s*none/i.test(style)) return true
+    if (/mso-hide\s*:\s*all/i.test(style)) return true
+    if (node.hasAttribute('hidden')) return true
+
+    const cls = node.getAttribute('class') ?? ''
+    if (/(^|\s)preheader(\s|$)/.test(cls)) return true
+    if (/(^|\s)preview-text(\s|$)/.test(cls)) return true
+
+    return false
+  },
+  replacement: () => '',
+})
+
+// ---------------------------------------------------------------------------
 // HTML -> Markdown conversion
 // ---------------------------------------------------------------------------
 
@@ -66,11 +140,28 @@ export function htmlToMarkdown(html: string): string {
   const cleaned = html
     .replace(/<!\-\-[\s\S]*?\-\->/g, '') // HTML comments
     .replace(/<o:p>[\s\S]*?<\/o:p>/gi, '') // Outlook tags
+    .replace(/<!\[if[\s\S]*?<!\[endif\]>/gi, '') // Outlook conditional comments
 
-  const md = turndown.turndown(cleaned)
+  let md = turndown.turndown(cleaned)
 
-  // Post-clean: collapse excessive blank lines
-  return md.replace(/\n{3,}/g, '\n\n').trim()
+  // Replace non-breaking/zero-width spaces before remark sees them
+  md = md.replace(/[\u00A0\u200B\u200C\u200D\uFEFF]/g, ' ')
+
+  // Parse and re-serialize through remark for stable, normalized markdown.
+  // This collapses whitespace, fixes list indentation, and validates structure.
+  const normalized = remark().processSync(md).toString()
+
+  // Remark escapes certain characters for markdown safety. Undo escapes that
+  // hurt readability in terminal output:
+  // - brackets: only for our synthetic [image: ...] placeholders
+  // - ampersands: only inside link destination parens (URL readability)
+  return normalized
+    .replace(/\\\[image:/g, '[image:')
+    .replace(/\(([^\n)]*)\)/g, (whole, inner: string) => {
+      if (!/(https?:\/\/|mailto:)/i.test(inner)) return whole
+      return `(${inner.replace(/\\&/g, '&')})`
+    })
+    .trim()
 }
 
 // ---------------------------------------------------------------------------
