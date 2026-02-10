@@ -126,7 +126,7 @@ async function migrateLegacyTokens(): Promise<void> {
   if (!fs.existsSync(LEGACY_TOKENS_FILE)) return
 
   const prisma = await getPrisma()
-  const count = await prisma.accounts.count()
+  const count = await prisma.account.count()
   if (count > 0) {
     // DB already has accounts — skip migration
     return
@@ -151,12 +151,14 @@ async function migrateLegacyTokens(): Promise<void> {
     const profile = await client.getProfile()
     const email = profile.emailAddress
 
-    await prisma.accounts.create({
+    await prisma.account.create({
       data: {
         email,
-        app_id: CLIENT_ID,
+        appId: CLIENT_ID,
+        accountStatus: 'active',
         tokens: JSON.stringify(tokens),
-        updated_at: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
       },
     })
 
@@ -294,10 +296,10 @@ export async function login(): Promise<{ email: string; appId: string; client: G
 
   // Upsert account in DB
   const prisma = await getPrisma()
-  await prisma.accounts.upsert({
-    where: { email_app_id: { email, app_id: CLIENT_ID } },
-    create: { email, app_id: CLIENT_ID, tokens: JSON.stringify(tokens), updated_at: new Date() },
-    update: { tokens: JSON.stringify(tokens), updated_at: new Date() },
+  await prisma.account.upsert({
+    where: { email_appId: { email, appId: CLIENT_ID } },
+    create: { email, appId: CLIENT_ID, accountStatus: 'active', tokens: JSON.stringify(tokens), createdAt: new Date(), updatedAt: new Date() },
+    update: { tokens: JSON.stringify(tokens), updatedAt: new Date() },
   })
 
   return { email, appId: CLIENT_ID, client }
@@ -310,7 +312,7 @@ export async function login(): Promise<{ email: string; appId: string; client: G
 export async function logout(email: string): Promise<void> {
   const prisma = await getPrisma()
   // Delete all app_id entries for this email (logout removes all credentials for the email)
-  await prisma.accounts.deleteMany({ where: { email } })
+  await prisma.account.deleteMany({ where: { email } })
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +322,8 @@ export async function logout(email: string): Promise<void> {
 export async function listAccounts(): Promise<AccountId[]> {
   await migrateLegacyTokens()
   const prisma = await getPrisma()
-  const rows = await prisma.accounts.findMany({ select: { email: true, app_id: true } })
-  return rows.map((r) => ({ email: r.email, appId: r.app_id }))
+  const rows = await prisma.account.findMany({ select: { email: true, appId: true } })
+  return rows.map((r) => ({ email: r.email, appId: r.appId }))
 }
 
 // ---------------------------------------------------------------------------
@@ -335,8 +337,8 @@ export async function listAccounts(): Promise<AccountId[]> {
  */
 async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
   const prisma = await getPrisma()
-  const row = await prisma.accounts.findUnique({
-    where: { email_app_id: { email: account.email, app_id: account.appId } },
+  const row = await prisma.account.findUnique({
+    where: { email_appId: { email: account.email, appId: account.appId } },
   })
   if (!row) {
     throw new Error(`No account found for ${account.email}. Run: zele login`)
@@ -353,9 +355,9 @@ async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
     const { credentials } = await oauth2Client.refreshAccessToken()
     const merged = { ...tokens, ...credentials }
     oauth2Client.setCredentials(merged)
-    await prisma.accounts.update({
-      where: { email_app_id: { email: account.email, app_id: account.appId } },
-      data: { tokens: JSON.stringify(merged), updated_at: new Date() },
+    await prisma.account.update({
+      where: { email_appId: { email: account.email, appId: account.appId } },
+      data: { tokens: JSON.stringify(merged), updatedAt: new Date() },
     })
   }
 
@@ -482,13 +484,13 @@ export interface AuthStatus {
 export async function getAuthStatuses(): Promise<AuthStatus[]> {
   await migrateLegacyTokens()
   const prisma = await getPrisma()
-  const rows = await prisma.accounts.findMany()
+  const rows = await prisma.account.findMany()
 
   return rows.map((row) => {
     const tokens: Credentials = JSON.parse(row.tokens)
     return {
       email: row.email,
-      appId: row.app_id,
+      appId: row.appId,
       expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
     }
   })
