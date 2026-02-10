@@ -188,10 +188,6 @@ export class GmailClient {
     return this.account !== null
   }
 
-  async invalidateThreadLists(): Promise<void> {
-    // Thread list results are no longer cached; keep method for call-site compatibility.
-  }
-
   private async getCachedThread(threadId: string): Promise<gmail_v1.Schema$Thread | undefined> {
     if (!this.cacheEnabled) return undefined
     const prisma = await getPrisma()
@@ -261,10 +257,6 @@ export class GmailClient {
     if (!this.cacheEnabled) return
     const prisma = await getPrisma()
     await prisma.label.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId } })
-  }
-
-  async invalidateLabelCounts(): Promise<void> {
-    // Label count results are no longer cached; keep method for call-site compatibility.
   }
 
   private async getCachedProfile(): Promise<{ emailAddress: string; messagesTotal: number; threadsTotal: number; historyId: string } | undefined> {
@@ -482,8 +474,6 @@ export class GmailClient {
         },
       }),
     )
-
-    await this.invalidateThreadLists()
 
     return res.data
   }
@@ -732,8 +722,6 @@ export class GmailClient {
       }),
     )
 
-    await this.invalidateThreadLists()
-
     return res.data
   }
 
@@ -846,11 +834,9 @@ export class GmailClient {
     await this.invalidateAfterThreadMutation(threadIds)
   }
 
-  /** Invalidate thread + list + label count caches after a thread mutation. */
+  /** Invalidate thread cache after a thread mutation. */
   private async invalidateAfterThreadMutation(threadIds: string[]): Promise<void> {
     await this.invalidateThreads(threadIds)
-    await this.invalidateThreadLists()
-    await this.invalidateLabelCounts()
   }
 
   /** Moves all spam threads to trash. Does not permanently delete. */
@@ -880,9 +866,6 @@ export class GmailClient {
       pageToken = res.nextPageToken ?? undefined
       if (!pageToken) break
     }
-
-    await this.invalidateThreadLists()
-    await this.invalidateLabelCounts()
 
     return { count: totalDeleted }
   }
@@ -974,7 +957,6 @@ export class GmailClient {
     )
     this.labelIdCache = {}
     await this.invalidateLabels()
-    await this.invalidateLabelCounts()
   }
 
   // =========================================================================

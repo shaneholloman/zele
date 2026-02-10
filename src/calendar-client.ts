@@ -379,11 +379,6 @@ export class CalendarClient {
     await prisma.calendarList.deleteMany({ where: this.account })
   }
 
-  async invalidateCalendarEvents(calendarId?: string): Promise<void> {
-    // Event list results are no longer cached; keep method for call-site compatibility.
-    void calendarId
-  }
-
   // =========================================================================
   // Internal: fetch DAVCalendar list (cached per instance)
   // =========================================================================
@@ -652,8 +647,6 @@ export class CalendarClient {
     )
     if (createResult instanceof Error) return createResult
 
-    await this.invalidateCalendarEvents()
-
     const events = parseICalData(iCalString)
     if (events instanceof ParseError) return events
     const event = events[0]
@@ -742,8 +735,6 @@ export class CalendarClient {
     )
     if (updateResult instanceof Error) return updateResult
 
-    await this.invalidateCalendarEvents()
-
     const events = parseICalData(iCalString)
     if (events instanceof ParseError) return events
     const event = events[0]
@@ -775,7 +766,6 @@ export class CalendarClient {
     )
     if (deleteResult instanceof Error) return deleteResult
 
-    await this.invalidateCalendarEvents()
   }
 
   async respondToEvent({
@@ -827,8 +817,6 @@ export class CalendarClient {
       }),
     )
     if (respondResult instanceof Error) return respondResult
-
-    await this.invalidateCalendarEvents()
 
     const events = parseICalData(iCalString)
     if (events instanceof ParseError) return events
