@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 // zele — Gmail CLI built on goke.
 // Entry point: registers all commands, global options, help, and version.
