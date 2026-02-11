@@ -9,8 +9,7 @@
         "@libsql/client": "^0.15.15",
         "@prisma/adapter-libsql": "^7.3.0",
         "@prisma/client": "^7.3.0",
-        "@raycast/utils": "^2.2.2",
-        "@termcast/utils": "^2.2.5",
+        "@termcast/utils": "^2.2.6",
         "email-addresses": "^5.0.0",
         "email-reply-parser": "^2.3.5",
         "errore": "^0.11.0",
@@ -337,8 +336,6 @@
 
     "@raycast/api": ["@raycast/api@1.104.6", "", { "dependencies": { "@oclif/core": "^4.5.4", "@oclif/plugin-autocomplete": "^3.2.35", "@oclif/plugin-help": "^6.2.33", "@oclif/plugin-not-found": "^3.2.68", "@types/node": "22.13.10", "@types/react": "19.0.10", "esbuild": "^0.25.10", "react": "19.0.0" }, "peerDependencies": { "react-devtools": "6.1.1" }, "optionalPeers": ["react-devtools"], "bin": { "ray": "bin/run.js" } }, "sha512-W3UnZrfh1EH9mteQQOibeUvniDnVsbRgcfSUgVWFTGuI6mzKLFzoM8mD6n5amYQM51JVvbuJbaqtfMqsTmnQCQ=="],
 
-    "@raycast/utils": ["@raycast/utils@2.2.2", "", { "dependencies": { "dequal": "^2.0.3" }, "peerDependencies": { "@raycast/api": ">=1.99.4", "react": ">=19.0.0" }, "optionalPeers": ["react"] }, "sha512-tZcyWCHZvz4L/i1CGEnSZkBoK6wwX1pzlTKjcWWugbrQyG0QCMOxjKJfRC/iNkD+hHaqhMWUj4Y0LNo/NknvFw=="],
-
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.57.1", "", { "os": "android", "cpu": "arm" }, "sha512-A6ehUVSiSaaliTxai040ZpZ2zTevHYbvu/lDoeAteHI8QnaosIzm4qwtezfRg1jOYaUmnzLX1AOD6Z+UJjtifg=="],
 
     "@rollup/rollup-android-arm64": ["@rollup/rollup-android-arm64@4.57.1", "", { "os": "android", "cpu": "arm64" }, "sha512-dQaAddCY9YgkFHZcFNS/606Exo8vcLHwArFZ7vxXq4rigo2bb494/xKMMwRRQW6ug7Js6yXmBZhSBRuBvCCQ3w=="],
@@ -403,7 +400,7 @@
 
     "@tanstack/react-query-persist-client": ["@tanstack/react-query-persist-client@5.90.22", "", { "dependencies": { "@tanstack/query-persist-client-core": "5.91.19" }, "peerDependencies": { "@tanstack/react-query": "^5.90.20", "react": "^18 || ^19" } }, "sha512-BrD3Y/SsrSIDl+t/gpYvjvGHXd7m7oF+GIqktKE8LmTgt7bS1lYHd/CLkVxMPixTU53gHHVFfPNGmY7Hv4L/7g=="],
 
-    "@termcast/utils": ["@termcast/utils@2.2.5", "", { "dependencies": { "@raycast/api": "npm:termcast@*", "dequal": "^2.0.3" }, "peerDependencies": { "react": ">=19.0.0", "termcast": "*" }, "optionalPeers": ["react"] }, "sha512-ldLkayrpHfjoF4F6H4anaYY3Bn6XFj01LGrMFkxKXlOe0VJx/0I0kebANtj3Ck0T82bwslJ1y08vde+d72kVXQ=="],
+    "@termcast/utils": ["@termcast/utils@2.2.6", "", { "dependencies": { "dequal": "^2.0.3" }, "peerDependencies": { "@raycast/api": "npm:termcast@*", "react": ">=19.0.0" }, "optionalPeers": ["react"] }, "sha512-6pmwuqGl7ES1pGySsucRS7KipENG3uXlPE9YcYnZ6FIu3AobN12aEQv6IJkKDmA/Lg0SC1R04Ty2fdS4QPulTA=="],
 
     "@tokenizer/token": ["@tokenizer/token@0.3.0", "", {}, "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A=="],
 
@@ -1227,8 +1224,6 @@
 
     "@raycast/api/react": ["react@19.0.0", "", {}, "sha512-V8AVnmPIICiWpGfm6GLzCR/W5FXLchHop40W4nXBmdlEceh16rCN8O8LNWm5bh5XUX91fh7KpA+W0TgMKmgTpQ=="],
 
-    "@termcast/utils/@raycast/api": ["termcast@1.3.38", "", { "dependencies": { "@opentui/core": "npm:@opentuah/core@^0.1.87", "@opentui/react": "npm:@opentuah/react@^0.1.87", "@parcel/watcher": "^2.5.6", "@tanstack/react-query": "^5.85.5", "@tanstack/react-query-persist-client": "^5.85.5", "@termcast/utils": "2.2.5", "change-case": "^5.4.4", "colord": "^2.9.3", "goke": "^6.1.3", "google-auth-library": "^10.3.0", "jszip": "^3.10.1", "nanoid": "^5.1.5", "node-diff3": "^3.2.0", "react-hook-form": "^7.62.0", "react-refresh": "^0.18.0", "simple-plist": "^1.3.1", "string-dedent": "^3.0.2", "zustand": "^5.0.8" }, "optionalDependencies": { "@parcel/watcher-linux-x64-glibc": "2.5.1" }, "peerDependencies": { "react": "*" }, "bin": { "termcast": "dist/cli.js" } }, "sha512-6rhgzEHnK35PYAfOySIByHsbdBv1c1ijFJYlANVO3JyBTy59x0SWI0DC8+7OtsVcpAitDZLO1NodLxmxosOIYA=="],
-
     "cross-fetch/node-fetch": ["node-fetch@2.7.0", "", { "dependencies": { "whatwg-url": "^5.0.0" }, "peerDependencies": { "encoding": "^0.1.0" }, "optionalPeers": ["encoding"] }, "sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A=="],
 
     "filelist/minimatch": ["minimatch@5.1.6", "", { "dependencies": { "brace-expansion": "^2.0.1" } }, "sha512-lKwV/1brpG6mBUFHtb7NUmtABCb2WZZmm2wNiOA5hAb8VdCS4B3dtMWyvcoViccwAW/COERjXLt0zP1zXUN26g=="],
@@ -1258,6 +1253,8 @@
     "string_decoder/safe-buffer": ["safe-buffer@5.1.2", "", {}, "sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g=="],
 
     "taskkill/execa": ["execa@6.1.0", "", { "dependencies": { "cross-spawn": "^7.0.3", "get-stream": "^6.0.1", "human-signals": "^3.0.1", "is-stream": "^3.0.0", "merge-stream": "^2.0.0", "npm-run-path": "^5.1.0", "onetime": "^6.0.0", "signal-exit": "^3.0.7", "strip-final-newline": "^3.0.0" } }, "sha512-QVWlX2e50heYJcCPG0iWtf8r0xjEYfz/OYLGDYH+IyjWezzPNxz63qNFOu0l4YftGWuizFVZHHs8PrLU5p2IDA=="],
+
+    "termcast/@termcast/utils": ["@termcast/utils@2.2.5", "", { "dependencies": { "@raycast/api": "npm:termcast@*", "dequal": "^2.0.3" }, "peerDependencies": { "react": ">=19.0.0", "termcast": "*" }, "optionalPeers": ["react"] }, "sha512-ldLkayrpHfjoF4F6H4anaYY3Bn6XFj01LGrMFkxKXlOe0VJx/0I0kebANtj3Ck0T82bwslJ1y08vde+d72kVXQ=="],
 
     "tsx/esbuild": ["esbuild@0.27.3", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.27.3", "@esbuild/android-arm": "0.27.3", "@esbuild/android-arm64": "0.27.3", "@esbuild/android-x64": "0.27.3", "@esbuild/darwin-arm64": "0.27.3", "@esbuild/darwin-x64": "0.27.3", "@esbuild/freebsd-arm64": "0.27.3", "@esbuild/freebsd-x64": "0.27.3", "@esbuild/linux-arm": "0.27.3", "@esbuild/linux-arm64": "0.27.3", "@esbuild/linux-ia32": "0.27.3", "@esbuild/linux-loong64": "0.27.3", "@esbuild/linux-mips64el": "0.27.3", "@esbuild/linux-ppc64": "0.27.3", "@esbuild/linux-riscv64": "0.27.3", "@esbuild/linux-s390x": "0.27.3", "@esbuild/linux-x64": "0.27.3", "@esbuild/netbsd-arm64": "0.27.3", "@esbuild/netbsd-x64": "0.27.3", "@esbuild/openbsd-arm64": "0.27.3", "@esbuild/openbsd-x64": "0.27.3", "@esbuild/openharmony-arm64": "0.27.3", "@esbuild/sunos-x64": "0.27.3", "@esbuild/win32-arm64": "0.27.3", "@esbuild/win32-ia32": "0.27.3", "@esbuild/win32-x64": "0.27.3" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-8VwMnyGCONIs6cWue2IdpHxHnAjzxnw2Zr7MkVxB2vjmQ2ivqGFb4LEG3SMnv0Gb2F/G/2yA8zUaiL1gywDCCg=="],
 
@@ -1290,6 +1287,8 @@
     "taskkill/execa/signal-exit": ["signal-exit@3.0.7", "", {}, "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="],
 
     "taskkill/execa/strip-final-newline": ["strip-final-newline@3.0.0", "", {}, "sha512-dOESqjYr96iWYylGObzd39EuNTa5VJxyvVAEm5Jnh7KGo75V43Hk1odPQkNDyXNmUR6k+gEiDVXnjB8HJ3crXw=="],
+
+    "termcast/@termcast/utils/@raycast/api": ["termcast@1.3.38", "", { "dependencies": { "@opentui/core": "npm:@opentuah/core@^0.1.87", "@opentui/react": "npm:@opentuah/react@^0.1.87", "@parcel/watcher": "^2.5.6", "@tanstack/react-query": "^5.85.5", "@tanstack/react-query-persist-client": "^5.85.5", "@termcast/utils": "2.2.5", "change-case": "^5.4.4", "colord": "^2.9.3", "goke": "^6.1.3", "google-auth-library": "^10.3.0", "jszip": "^3.10.1", "nanoid": "^5.1.5", "node-diff3": "^3.2.0", "react-hook-form": "^7.62.0", "react-refresh": "^0.18.0", "simple-plist": "^1.3.1", "string-dedent": "^3.0.2", "zustand": "^5.0.8" }, "optionalDependencies": { "@parcel/watcher-linux-x64-glibc": "2.5.1" }, "peerDependencies": { "react": "*" }, "bin": { "termcast": "dist/cli.js" } }, "sha512-6rhgzEHnK35PYAfOySIByHsbdBv1c1ijFJYlANVO3JyBTy59x0SWI0DC8+7OtsVcpAitDZLO1NodLxmxosOIYA=="],
 
     "tsx/esbuild/@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.3", "", { "os": "aix", "cpu": "ppc64" }, "sha512-9fJMTNFTWZMh5qwrBItuziu834eOCUcEqymSH7pY+zoMVEZg3gcPuBNxH1EvfVYe9h0x/Ptw8KBzv7qxb7l8dg=="],
 
