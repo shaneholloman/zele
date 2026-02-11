@@ -35,7 +35,7 @@ cli.option(
 cli
   .command('', 'Browse emails in TUI')
   .action(async () => {
-    if (typeof globalThis.Bun === 'undefined') {
+    if (typeof (globalThis as { Bun?: unknown }).Bun === 'undefined') {
       const pc = await import('picocolors')
       const isWindows = process.platform === 'win32'
       const installCmd = isWindows
