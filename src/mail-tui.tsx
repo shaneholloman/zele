@@ -367,130 +367,134 @@ function ManageAccounts({
 }
 
 // ---------------------------------------------------------------------------
-// Reply Form
+// Compose Form (unified: reply, reply all, forward)
 // ---------------------------------------------------------------------------
 
-function ReplyForm({
-  threadId,
-  account,
-  replyAll,
-  revalidate,
-}: {
-  threadId: string
-  account: string
-  replyAll?: boolean
-  revalidate: () => void
-}) {
-  const { pop } = useNavigation()
-  const [isLoading, setIsLoading] = useState(false)
+type ComposeMode =
+  | { type: 'reply'; threadId: string; replyAll?: boolean }
+  | { type: 'forward'; threadId: string }
 
-  const handleSubmit = async (values: { body: string }) => {
-    if (!values.body?.trim()) {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: 'Body is required',
-      })
-      return
-    }
-    setIsLoading(true)
-    const { client } = await getClient([account])
-    const result = await client.replyToThread({
-      threadId,
-      body: values.body,
-      replyAll,
-    })
-    setIsLoading(false)
-    if (result instanceof Error) {
-      await showFailureToast(result, { title: 'Failed to send reply' })
-      return
-    }
-    await showToast({ style: Toast.Style.Success, title: 'Reply sent' })
-    revalidate()
-    pop()
-  }
-
-  return (
-    <Form
-      isLoading={isLoading}
-      navigationTitle={replyAll ? 'Reply All' : 'Reply'}
-      actions={
-        <ActionPanel>
-          <Action.SubmitForm title='Send Reply' onSubmit={handleSubmit} />
-        </ActionPanel>
-      }
-    >
-      <Form.TextArea
-        id='body'
-        title='Message'
-        placeholder='Type your reply...'
-      />
-    </Form>
-  )
+interface ComposeFormProps {
+  mode: ComposeMode
+  initialAccount: string
+  accounts: AuthStatus[]
+  onSent?: () => void
 }
 
-// ---------------------------------------------------------------------------
-// Forward Form
-// ---------------------------------------------------------------------------
-
-function ForwardForm({
-  threadId,
-  account,
-  revalidate,
-}: {
-  threadId: string
-  account: string
-  revalidate: () => void
-}) {
+function ComposeForm({ mode, initialAccount, accounts, onSent }: ComposeFormProps) {
   const { pop } = useNavigation()
   const [isLoading, setIsLoading] = useState(false)
+  const [selectedAccount, setSelectedAccount] = useState(initialAccount)
 
-  const handleSubmit = async (values: { to: string; body: string }) => {
-    if (!values.to?.trim()) {
+  const navigationTitle =
+    mode.type === 'forward'
+      ? 'Forward'
+      : mode.replyAll
+        ? 'Reply All'
+        : 'Reply'
+
+  const bodyPlaceholder =
+    mode.type === 'forward'
+      ? 'Add a message (optional)...'
+      : 'Type your reply...'
+
+  const handleSubmit = async (values: { to?: string; body?: string }) => {
+    // Validate based on mode
+    if (mode.type === 'forward' && !values.to?.trim()) {
       await showToast({
         style: Toast.Style.Failure,
         title: 'Recipient is required',
       })
       return
     }
-    setIsLoading(true)
-    const recipients = values.to
-      .split(',')
-      .map((e) => ({ email: e.trim() }))
-      .filter((e) => e.email)
-    const { client } = await getClient([account])
-    const result = await client.forwardThread({
-      threadId,
-      to: recipients,
-      body: values.body || undefined,
-    })
-    setIsLoading(false)
-    if (result instanceof Error) {
-      await showFailureToast(result, { title: 'Failed to forward' })
+    if (mode.type !== 'forward' && !values.body?.trim()) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: 'Message is required',
+      })
       return
     }
-    await showToast({
-      style: Toast.Style.Success,
-      title: `Forwarded to ${values.to}`,
-    })
-    revalidate()
+
+    setIsLoading(true)
+    const { client } = await getClient([selectedAccount])
+
+    let result: Error | unknown
+    if (mode.type === 'forward') {
+      const recipients = (values.to ?? '')
+        .split(',')
+        .map((e) => ({ email: e.trim() }))
+        .filter((e) => e.email)
+      result = await client.forwardThread({
+        threadId: mode.threadId,
+        to: recipients,
+        body: values.body || undefined,
+      })
+    } else {
+      result = await client.replyToThread({
+        threadId: mode.threadId,
+        body: values.body ?? '',
+        replyAll: mode.replyAll,
+      })
+    }
+
+    setIsLoading(false)
+
+    if (result instanceof Error) {
+      await showFailureToast(result, {
+        title: mode.type === 'forward' ? 'Failed to forward' : 'Failed to send reply',
+      })
+      return
+    }
+
+    const successTitle =
+      mode.type === 'forward'
+        ? `Forwarded to ${values.to}`
+        : 'Reply sent'
+    await showToast({ style: Toast.Style.Success, title: successTitle })
+    onSent?.()
     pop()
   }
 
   return (
     <Form
       isLoading={isLoading}
-      navigationTitle='Forward'
+      navigationTitle={navigationTitle}
       actions={
         <ActionPanel>
-          <Action.SubmitForm title='Forward' onSubmit={handleSubmit} />
+          <Action.SubmitForm
+            title={mode.type === 'forward' ? 'Forward' : 'Send Reply'}
+            onSubmit={handleSubmit}
+          />
         </ActionPanel>
       }
     >
-      <Form.TextField id='to' title='To' placeholder='recipient@example.com' />
+      {accounts.length > 1 && (
+        <Form.Dropdown
+          id='account'
+          title='From'
+          value={selectedAccount}
+          onChange={(v) => setSelectedAccount(Array.isArray(v) ? v[0] ?? initialAccount : v)}
+        >
+          {accounts.map((a) => (
+            <Form.Dropdown.Item
+              key={a.email}
+              value={a.email}
+              title={a.email}
+            />
+          ))}
+        </Form.Dropdown>
+      )}
+      {mode.type === 'forward' && (
+        <Form.TextField
+          id='to'
+          title='To'
+          placeholder='recipient@example.com'
+        />
+      )}
       <Form.TextArea
         id='body'
         title='Message'
-        placeholder='Optional message to prepend...'
+        placeholder={bodyPlaceholder}
       />
     </Form>
   )
@@ -503,10 +507,12 @@ function ForwardForm({
 function ThreadDetail({
   threadId,
   account,
+  accounts,
   revalidate,
 }: {
   threadId: string
   account: string
+  accounts: AuthStatus[]
   revalidate: () => void
 }) {
   const thread = useCachedPromise(
@@ -621,10 +627,11 @@ function ThreadDetail({
               icon={Icon.Reply}
               shortcut={{ modifiers: ['ctrl'], key: 'r' }}
               target={
-                <ReplyForm
-                  threadId={threadId}
-                  account={account}
-                  revalidate={revalidate}
+                <ComposeForm
+                  mode={{ type: 'reply', threadId }}
+                  initialAccount={account}
+                  accounts={accounts}
+                  onSent={revalidate}
                 />
               }
             />
@@ -636,11 +643,11 @@ function ThreadDetail({
                 key: 'r',
               }}
               target={
-                <ReplyForm
-                  threadId={threadId}
-                  account={account}
-                  replyAll
-                  revalidate={revalidate}
+                <ComposeForm
+                  mode={{ type: 'reply', threadId, replyAll: true }}
+                  initialAccount={account}
+                  accounts={accounts}
+                  onSent={revalidate}
                 />
               }
             />
@@ -649,10 +656,11 @@ function ThreadDetail({
               icon={Icon.Forward}
               shortcut={{ modifiers: ['ctrl'], key: 'f' }}
               target={
-                <ForwardForm
-                  threadId={threadId}
-                  account={account}
-                  revalidate={revalidate}
+                <ComposeForm
+                  mode={{ type: 'forward', threadId }}
+                  initialAccount={account}
+                  accounts={accounts}
+                  onSent={revalidate}
                 />
               }
             />
@@ -893,6 +901,7 @@ export default function Command() {
     <List
       isLoading={isLoading || accounts.isLoading}
       isShowingDetail={isShowingDetail}
+      spacingMode='relaxed'
       searchBarPlaceholder='Search emails...'
       onSearchTextChange={setSearchText}
       throttle
@@ -902,10 +911,10 @@ export default function Command() {
           <AccountDropdown
             accounts={accountList}
             value={selectedAccount}
-            onChange={setSelectedAccount}
-            onAdded={handleAccountAdded}
-            onRemoved={handleAccountRemoved}
-          />
+              onChange={setSelectedAccount}
+              onAdded={handleAccountAdded}
+              onRemoved={handleAccountRemoved}
+            />
         ) : undefined
       }
     >
@@ -1084,6 +1093,7 @@ export default function Command() {
                           <ThreadDetail
                             threadId={thread.id}
                             account={thread.account}
+                            accounts={accountList}
                             revalidate={revalidate}
                           />
                         }
@@ -1197,10 +1207,11 @@ export default function Command() {
                           key: 'r',
                         }}
                         target={
-                          <ReplyForm
-                            threadId={thread.id}
-                            account={thread.account}
-                            revalidate={revalidate}
+                          <ComposeForm
+                            mode={{ type: 'reply', threadId: thread.id }}
+                            initialAccount={thread.account}
+                            accounts={accountList}
+                            onSent={revalidate}
                           />
                         }
                       />
@@ -1212,11 +1223,11 @@ export default function Command() {
                           key: 'r',
                         }}
                         target={
-                          <ReplyForm
-                            threadId={thread.id}
-                            account={thread.account}
-                            replyAll
-                            revalidate={revalidate}
+                          <ComposeForm
+                            mode={{ type: 'reply', threadId: thread.id, replyAll: true }}
+                            initialAccount={thread.account}
+                            accounts={accountList}
+                            onSent={revalidate}
                           />
                         }
                       />
@@ -1228,10 +1239,11 @@ export default function Command() {
                           key: 'f',
                         }}
                         target={
-                          <ForwardForm
-                            threadId={thread.id}
-                            account={thread.account}
-                            revalidate={revalidate}
+                          <ComposeForm
+                            mode={{ type: 'forward', threadId: thread.id }}
+                            initialAccount={thread.account}
+                            accounts={accountList}
+                            onSent={revalidate}
                           />
                         }
                       />
