@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.7
+
+- **Auth:** Improve OAuth callback page (dark mode, clearer errors, and copy/paste-friendly next steps)
+- **Mail TUI:** Make pagination adapt to terminal height via `useTerminalDimensions`
+- **Mail TUI:** Tweak unread styling colors for better contrast
+- **Dependencies:** Bump Termcast and track latest `@opentuah` releases via `@opentui/*` aliasing
+
 ## 0.3.6
 
 - **TUI Auth:** Auto-run `zele login` before launching the root TUI command when no accounts are registered
