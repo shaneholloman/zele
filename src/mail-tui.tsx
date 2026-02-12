@@ -203,7 +203,7 @@ function AccountDropdown({
           />
         ))}
       </List.Dropdown.Section>
-      <List.Dropdown.Section>
+      <List.Dropdown.Section title='Manage Accounts'>
         <List.Dropdown.Item
           title='Add Account'
           value={ADD_ACCOUNT}
@@ -343,7 +343,6 @@ function ManageAccounts({
               <Action
                 title='Logout Account'
                 icon={Icon.Trash}
-                style={Action.Style.Destructive}
                 onAction={() => handleRemoved(a.email)}
               />
             </ActionPanel>
@@ -1058,7 +1057,6 @@ export default function Command() {
                         <Action
                           title={`Trash ${selectedThreads.length} Selected`}
                           icon={Icon.Trash}
-                          style={Action.Style.Destructive}
                           onAction={() =>
                             handleBulkAction('Trashed', async (c, ids) => {
                               for (const id of ids) {
@@ -1260,7 +1258,6 @@ export default function Command() {
                       <Action
                         title='Trash'
                         icon={Icon.Trash}
-                        style={Action.Style.Destructive}
                         shortcut={{
                           modifiers: ['ctrl'],
                           key: 'backspace',
