@@ -33,6 +33,10 @@ all persistent state is stored in this DB via Prisma models:
 - `profiles`: cached account profile data
 - `sync_states`: misc per-account sync metadata (for example history IDs)
 
+## prisma
+
+prisma version in package.json MUST be pinned. no ^. this makes sure the generated prisma code is compatible with the prisma client used in the npm package
+
 ## changelog
 
 keep `CHANGELOG.md` updated when making user-facing changes. bump the version in `package.json` and `src/cli.ts` together.
