@@ -92,8 +92,7 @@ export function registerAuthCommands(cli: Goke) {
           status: 'Authenticated',
           expires: s.expiresAt?.toISOString() ?? 'unknown',
         })),
+        { summary: `${statuses.length} account(s)` },
       )
-
-      out.hint(`${statuses.length} account(s)`)
     })
 }

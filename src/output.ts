@@ -212,17 +212,22 @@ export function printYaml(data: unknown): void {
 }
 
 /**
- * Print a list of items as YAML with optional pagination.
+ * Print a list of items as YAML with optional pagination and summary.
  * Output shape:
+ *   summary: "5 threads (inbox)"
  *   items:
  *     - key: value
  *   next_page: "token"
  */
 export function printList(
   items: Record<string, unknown>[],
-  opts?: { nextPage?: string | null },
+  opts?: { nextPage?: string | null; summary?: string },
 ): void {
-  const doc: Record<string, unknown> = { items }
+  const doc: Record<string, unknown> = {}
+  if (opts?.summary) {
+    doc.summary = opts.summary
+  }
+  doc.items = items
   if (opts?.nextPage) {
     doc.next_page = opts.nextPage
   }

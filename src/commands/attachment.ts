@@ -33,13 +33,11 @@ export function registerAttachmentCommands(cli: Goke) {
       )
 
       if (attachments.length === 0) {
-        out.hint('No attachments')
+        out.printList([], { summary: 'No attachments' })
         return
       }
 
-      out.printList(attachments)
-
-      out.hint(`${attachments.length} attachment(s)`)
+      out.printList(attachments, { summary: `${attachments.length} attachment(s)` })
       out.hint('Use: zele attachment get <messageId> <attachmentId>')
     })
 

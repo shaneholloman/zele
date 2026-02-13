@@ -59,7 +59,7 @@ export function registerDraftCommands(cli: Goke) {
         .slice(0, options.max)
 
       if (merged.length === 0) {
-        out.hint('No drafts found')
+        out.printList([], { summary: 'No drafts found' })
         return
       }
 
@@ -72,9 +72,8 @@ export function registerDraftCommands(cli: Goke) {
           subject: d.subject,
           date: out.formatDate(d.date),
         })),
+        { summary: `${merged.length} draft(s)` },
       )
-
-      out.hint(`${merged.length} draft(s)`)
     })
 
   // =========================================================================
