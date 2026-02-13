@@ -696,7 +696,19 @@ export default function Command() {
   const [searchText, setSearchText] = useState('')
   const [isShowingDetail, setIsShowingDetail] = useState(true)
   const [selectedThreads, setSelectedThreads] = useState<string[]>([])
+  const [activeMutations, setActiveMutations] = useState(0)
+  const isMutating = activeMutations > 0
   const { height: terminalRows } = useTerminalDimensions()
+
+  /** Wrap async mutation calls to track global loading state. */
+  const withMutation = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    setActiveMutations((n) => n + 1)
+    try {
+      return await fn()
+    } finally {
+      setActiveMutations((n) => n - 1)
+    }
+  }, [])
   const pageSize = getPageSizeFromTerminalHeight(terminalRows)
 
   const accounts = useAccounts()
@@ -872,40 +884,42 @@ export default function Command() {
     ) => {
       if (selectedThreads.length === 0) return
 
-      // Group selected threads by account
-      const byAccount = new Map<string, string[]>()
-      for (const tid of selectedThreads) {
-        const thread = allThreads.find((t: ThreadItem) => t.id === tid)
-        if (!thread) continue
-        const list = byAccount.get(thread.account) ?? []
-        list.push(tid)
-        byAccount.set(thread.account, list)
-      }
-
-      for (const [acct, ids] of byAccount) {
-        const { client } = await getClient([acct])
-        const result = await fn(client, ids)
-        if (result instanceof Error) {
-          await showFailureToast(result, {
-            title: `Failed to ${actionName}`,
-          })
-          return
+      await withMutation(async () => {
+        // Group selected threads by account
+        const byAccount = new Map<string, string[]>()
+        for (const tid of selectedThreads) {
+          const thread = allThreads.find((t: ThreadItem) => t.id === tid)
+          if (!thread) continue
+          const list = byAccount.get(thread.account) ?? []
+          list.push(tid)
+          byAccount.set(thread.account, list)
         }
-      }
 
-      await showToast({
-        style: Toast.Style.Success,
-        title: `${actionName}: ${selectedThreads.length} thread(s)`,
+        for (const [acct, ids] of byAccount) {
+          const { client } = await getClient([acct])
+          const result = await fn(client, ids)
+          if (result instanceof Error) {
+            await showFailureToast(result, {
+              title: `Failed to ${actionName}`,
+            })
+            return
+          }
+        }
+
+        await showToast({
+          style: Toast.Style.Success,
+          title: `${actionName}: ${selectedThreads.length} thread(s)`,
+        })
+        setSelectedThreads([])
+        revalidate()
       })
-      setSelectedThreads([])
-      revalidate()
     },
-    [selectedThreads, allThreads, revalidate],
+    [selectedThreads, allThreads, revalidate, withMutation],
   )
 
   return (
     <List
-      isLoading={isLoading || accounts.isLoading}
+      isLoading={isLoading || accounts.isLoading || isMutating}
       isShowingDetail={isShowingDetail}
       spacingMode={LIST_SPACING_MODE}
       searchBarPlaceholder='Search emails...'
@@ -1125,7 +1139,7 @@ export default function Command() {
                             title={thread.unread ? 'Mark as Read' : 'Mark as Unread'}
                             icon={thread.unread ? Icon.Eye : Icon.EyeDisabled}
                             shortcut={{ modifiers: ['ctrl'], key: 'u' }}
-                            onAction={async () => {
+                            onAction={() => withMutation(async () => {
                               const { client } = await getClient([thread.account])
                               const result = thread.unread
                                 ? await client.markAsRead({ threadIds: [thread.id] })
@@ -1139,13 +1153,13 @@ export default function Command() {
                                 title: thread.unread ? 'Marked as read' : 'Marked as unread',
                               })
                               revalidate()
-                            }}
+                            })}
                           />
                           <Action
                             title='Archive'
                             icon={Icon.Tray}
                             shortcut={{ modifiers: ['ctrl'], key: 'e' }}
-                            onAction={async () => {
+                            onAction={() => withMutation(async () => {
                               const { client } = await getClient([thread.account])
                               const result = await client.archive({ threadIds: [thread.id] })
                               if (result instanceof Error) {
@@ -1157,13 +1171,13 @@ export default function Command() {
                                 title: 'Archived',
                               })
                               revalidate()
-                            }}
+                            })}
                           />
                           <Action
                             title={thread.labelIds.includes('STARRED') ? 'Unstar' : 'Star'}
                             icon={Icon.Star}
                             shortcut={{ modifiers: ['ctrl'], key: 's' }}
-                            onAction={async () => {
+                            onAction={() => withMutation(async () => {
                               const { client } = await getClient([thread.account])
                               const isStarred = thread.labelIds.includes('STARRED')
                               const result = isStarred
@@ -1178,7 +1192,7 @@ export default function Command() {
                                 title: isStarred ? 'Unstarred' : 'Starred',
                               })
                               revalidate()
-                            }}
+                            })}
                           />
                         </ActionPanel.Section>
                         <ActionPanel.Section title='Reply & Forward'>
@@ -1241,7 +1255,7 @@ export default function Command() {
                             title='Trash'
                             icon={Icon.Trash}
                             shortcut={{ modifiers: ['ctrl'], key: 'backspace' }}
-                            onAction={async () => {
+                            onAction={() => withMutation(async () => {
                               const { client } = await getClient([thread.account])
                               await client.trash({ threadId: thread.id })
                               await showToast({
@@ -1249,7 +1263,7 @@ export default function Command() {
                                 title: 'Trashed',
                               })
                               revalidate()
-                            }}
+                            })}
                           />
                         </ActionPanel.Section>
                         <ActionPanel.Section>
