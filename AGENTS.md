@@ -14,9 +14,11 @@ do not add manual type annotations to `.action(async ...)` parameters in goke co
 
 prefer shared generic guards over inline complex filter predicates. use `isTruthy` from `src/api-utils.ts` in `Array.filter()` chains when removing nullable placeholders to keep code readable and type narrowing predictable.
 
-## mail tui 
+## tui
 
-the mail-tui.tsx file uses termcast. which is a raycast extension API re implementation for the terminal. it implements basically all raycast APIs but renders as a TUI. termcast command is run globally. running termcast dev will show the tui and refresh it on file changes. global termcast is linked to the kimaki termcast project. you can apply fixes there finding it with kimaki project list if needed.
+the TUI is launched via `zele` (the root command, no subcommand). the mail-tui.tsx file uses termcast, a raycast extension API re-implementation for the terminal. it implements basically all raycast APIs but renders as a TUI. termcast command is run globally. running termcast dev will show the tui and refresh it on file changes. global termcast is linked to the kimaki termcast project. you can apply fixes there finding it with kimaki project list if needed.
+
+@termcast/utils is also a reimplementation of @raycast/utils for termcast.
 
 to try out and test the tui you must use tuistory. it is a cli to launch, control and see long running tui processes like ours. it also has a js api like playwright to test tui applications.
 
