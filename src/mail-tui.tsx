@@ -1026,295 +1026,248 @@ export default function Command() {
                 detail={detail}
                 actions={
                   <ActionPanel>
-                    {/* Selection actions (when items are selected) */}
-                    {hasSelection && (
-                      <ActionPanel.Section title='Selection'>
-                        <Action
-                          title={
-                            isSelected ? 'Deselect Thread' : 'Select Thread'
-                          }
-                          icon={isSelected ? Icon.CheckCircle : Icon.Circle}
-                          onAction={() => toggleSelection(thread.id)}
-                        />
-                        <Action
-                          title={`Archive ${selectedThreads.length} Selected`}
-                          icon={Icon.Tray}
-                          onAction={() =>
-                            handleBulkAction('Archived', (c, ids) =>
-                              c.archive({
-                                threadIds: ids,
-                              }),
-                            )
-                          }
-                        />
-                        <Action
-                          title={`Mark ${selectedThreads.length} as Read`}
-                          icon={Icon.Eye}
-                          onAction={() =>
-                            handleBulkAction('Marked as read', (c, ids) =>
-                              c.markAsRead({
-                                threadIds: ids,
-                              }),
-                            )
-                          }
-                        />
-                        <Action
-                          title={`Star ${selectedThreads.length} Selected`}
-                          icon={Icon.Star}
-                          onAction={() =>
-                            handleBulkAction('Starred', (c, ids) =>
-                              c.star({
-                                threadIds: ids,
-                              }),
-                            )
-                          }
-                        />
-                        <Action
-                          title={`Trash ${selectedThreads.length} Selected`}
-                          icon={Icon.Trash}
-                          onAction={() =>
-                            handleBulkAction('Trashed', async (c, ids) => {
-                              for (const id of ids) {
-                                await c.trash({
-                                  threadId: id,
-                                })
+                    {hasSelection ? (
+                      // ─────────────────────────────────────────────
+                      // SELECTION MODE
+                      // ─────────────────────────────────────────────
+                      <>
+                        <ActionPanel.Section title='Selection'>
+                          <Action
+                            title={isSelected ? 'Deselect Thread' : 'Select Thread'}
+                            icon={isSelected ? Icon.Circle : Icon.CheckCircle}
+                            shortcut={{ modifiers: ['ctrl'], key: 'x' }}
+                            onAction={() => toggleSelection(thread.id)}
+                          />
+                          <Action
+                            title={`Archive ${selectedThreads.length} Selected`}
+                            icon={Icon.Tray}
+                            onAction={() =>
+                              handleBulkAction('Archived', (c, ids) =>
+                                c.archive({ threadIds: ids }),
+                              )
+                            }
+                          />
+                          <Action
+                            title={`Mark ${selectedThreads.length} as Read`}
+                            icon={Icon.Eye}
+                            onAction={() =>
+                              handleBulkAction('Marked as read', (c, ids) =>
+                                c.markAsRead({ threadIds: ids }),
+                              )
+                            }
+                          />
+                          <Action
+                            title={`Star ${selectedThreads.length} Selected`}
+                            icon={Icon.Star}
+                            onAction={() =>
+                              handleBulkAction('Starred', (c, ids) =>
+                                c.star({ threadIds: ids }),
+                              )
+                            }
+                          />
+                          <Action
+                            title={`Trash ${selectedThreads.length} Selected`}
+                            icon={Icon.Trash}
+                            onAction={() =>
+                              handleBulkAction('Trashed', async (c, ids) => {
+                                for (const id of ids) {
+                                  await c.trash({ threadId: id })
+                                }
+                              })
+                            }
+                          />
+                          <Action
+                            title='Deselect All'
+                            icon={Icon.XMarkCircle}
+                            onAction={() => setSelectedThreads([])}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Refresh'
+                            icon={Icon.ArrowClockwise}
+                            shortcut={{ modifiers: ['ctrl', 'shift'], key: 'r' }}
+                            onAction={() => revalidate()}
+                          />
+                          <Action
+                            title='Toggle Detail'
+                            icon={Icon.Sidebar}
+                            shortcut={{ modifiers: ['ctrl'], key: 'd' }}
+                            onAction={() => setIsShowingDetail((v) => !v)}
+                          />
+                        </ActionPanel.Section>
+                      </>
+                    ) : (
+                      // ─────────────────────────────────────────────
+                      // NORMAL MODE
+                      // ─────────────────────────────────────────────
+                      <>
+                        <ActionPanel.Section>
+                          <Action.Push
+                            title='Open Thread'
+                            icon={Icon.Eye}
+                            target={
+                              <ThreadDetail
+                                threadId={thread.id}
+                                account={thread.account}
+                                accounts={accountList}
+                                revalidate={revalidate}
+                              />
+                            }
+                          />
+                          <Action
+                            title='Select Thread'
+                            icon={Icon.CheckCircle}
+                            shortcut={{ modifiers: ['ctrl'], key: 'x' }}
+                            onAction={() => toggleSelection(thread.id)}
+                          />
+                          <Action
+                            title={thread.unread ? 'Mark as Read' : 'Mark as Unread'}
+                            icon={thread.unread ? Icon.Eye : Icon.EyeDisabled}
+                            shortcut={{ modifiers: ['ctrl'], key: 'u' }}
+                            onAction={async () => {
+                              const { client } = await getClient([thread.account])
+                              const result = thread.unread
+                                ? await client.markAsRead({ threadIds: [thread.id] })
+                                : await client.markAsUnread({ threadIds: [thread.id] })
+                              if (result instanceof Error) {
+                                await showFailureToast(result)
+                                return
                               }
-                            })
-                          }
-                        />
-                        <Action
-                          title='Deselect All'
-                          icon={Icon.XMarkCircle}
-                          onAction={() => setSelectedThreads([])}
-                        />
-                      </ActionPanel.Section>
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: thread.unread ? 'Marked as read' : 'Marked as unread',
+                              })
+                              revalidate()
+                            }}
+                          />
+                          <Action
+                            title='Archive'
+                            icon={Icon.Tray}
+                            shortcut={{ modifiers: ['ctrl'], key: 'e' }}
+                            onAction={async () => {
+                              const { client } = await getClient([thread.account])
+                              const result = await client.archive({ threadIds: [thread.id] })
+                              if (result instanceof Error) {
+                                await showFailureToast(result)
+                                return
+                              }
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: 'Archived',
+                              })
+                              revalidate()
+                            }}
+                          />
+                          <Action
+                            title={thread.labelIds.includes('STARRED') ? 'Unstar' : 'Star'}
+                            icon={Icon.Star}
+                            shortcut={{ modifiers: ['ctrl'], key: 's' }}
+                            onAction={async () => {
+                              const { client } = await getClient([thread.account])
+                              const isStarred = thread.labelIds.includes('STARRED')
+                              const result = isStarred
+                                ? await client.unstar({ threadIds: [thread.id] })
+                                : await client.star({ threadIds: [thread.id] })
+                              if (result instanceof Error) {
+                                await showFailureToast(result)
+                                return
+                              }
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: isStarred ? 'Unstarred' : 'Starred',
+                              })
+                              revalidate()
+                            }}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Reply & Forward'>
+                          <Action.Push
+                            title='Reply'
+                            icon={Icon.Reply}
+                            shortcut={{ modifiers: ['ctrl'], key: 'r' }}
+                            target={
+                              <ComposeForm
+                                mode={{ type: 'reply', threadId: thread.id }}
+                                initialAccount={thread.account}
+                                accounts={accountList}
+                                onSent={revalidate}
+                              />
+                            }
+                          />
+                          <Action.Push
+                            title='Reply All'
+                            icon={Icon.Reply}
+                            shortcut={{ modifiers: ['ctrl', 'shift'], key: 'r' }}
+                            target={
+                              <ComposeForm
+                                mode={{ type: 'reply', threadId: thread.id, replyAll: true }}
+                                initialAccount={thread.account}
+                                accounts={accountList}
+                                onSent={revalidate}
+                              />
+                            }
+                          />
+                          <Action.Push
+                            title='Forward'
+                            icon={Icon.Forward}
+                            shortcut={{ modifiers: ['ctrl'], key: 'f' }}
+                            target={
+                              <ComposeForm
+                                mode={{ type: 'forward', threadId: thread.id }}
+                                initialAccount={thread.account}
+                                accounts={accountList}
+                                onSent={revalidate}
+                              />
+                            }
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Copy'>
+                          <Action.CopyToClipboard
+                            title='Copy Thread ID'
+                            content={thread.id}
+                          />
+                          <Action.CopyToClipboard
+                            title='Copy Subject'
+                            content={thread.subject}
+                          />
+                          <Action.CopyToClipboard
+                            title='Copy Sender Email'
+                            content={thread.from.email}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Trash'
+                            icon={Icon.Trash}
+                            shortcut={{ modifiers: ['ctrl'], key: 'backspace' }}
+                            onAction={async () => {
+                              const { client } = await getClient([thread.account])
+                              await client.trash({ threadId: thread.id })
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: 'Trashed',
+                              })
+                              revalidate()
+                            }}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Refresh'
+                            icon={Icon.ArrowClockwise}
+                            shortcut={{ modifiers: ['ctrl', 'shift'], key: 'r' }}
+                            onAction={() => revalidate()}
+                          />
+                          <Action
+                            title='Toggle Detail'
+                            icon={Icon.Sidebar}
+                            shortcut={{ modifiers: ['ctrl'], key: 'd' }}
+                            onAction={() => setIsShowingDetail((v) => !v)}
+                          />
+                        </ActionPanel.Section>
+                      </>
                     )}
-
-                    {/* Primary actions */}
-                    <ActionPanel.Section>
-                      <Action.Push
-                        title='Open Thread'
-                        icon={Icon.Eye}
-                        target={
-                          <ThreadDetail
-                            threadId={thread.id}
-                            account={thread.account}
-                            accounts={accountList}
-                            revalidate={revalidate}
-                          />
-                        }
-                      />
-                      {!hasSelection && (
-                        <Action
-                          title='Select Thread'
-                          icon={Icon.CheckCircle}
-                          shortcut={{
-                            modifiers: ['ctrl'],
-                            key: 'x',
-                          }}
-                          onAction={() => toggleSelection(thread.id)}
-                        />
-                      )}
-                      <Action
-                        title={
-                          thread.unread ? 'Mark as Read' : 'Mark as Unread'
-                        }
-                        icon={thread.unread ? Icon.Eye : Icon.EyeDisabled}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'u',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          const result = thread.unread
-                            ? await client.markAsRead({
-                                threadIds: [thread.id],
-                              })
-                            : await client.markAsUnread({
-                                threadIds: [thread.id],
-                              })
-                          if (result instanceof Error) {
-                            await showFailureToast(result)
-                            return
-                          }
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: thread.unread
-                              ? 'Marked as read'
-                              : 'Marked as unread',
-                          })
-                          revalidate()
-                        }}
-                      />
-                      <Action
-                        title='Archive'
-                        icon={Icon.Tray}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'e',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          const result = await client.archive({
-                            threadIds: [thread.id],
-                          })
-                          if (result instanceof Error) {
-                            await showFailureToast(result)
-                            return
-                          }
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: 'Archived',
-                          })
-                          revalidate()
-                        }}
-                      />
-                      <Action
-                        title={
-                          thread.labelIds.includes('STARRED')
-                            ? 'Unstar'
-                            : 'Star'
-                        }
-                        icon={Icon.Star}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 's',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          const isStarred = thread.labelIds.includes('STARRED')
-                          const result = isStarred
-                            ? await client.unstar({
-                                threadIds: [thread.id],
-                              })
-                            : await client.star({
-                                threadIds: [thread.id],
-                              })
-                          if (result instanceof Error) {
-                            await showFailureToast(result)
-                            return
-                          }
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: isStarred ? 'Unstarred' : 'Starred',
-                          })
-                          revalidate()
-                        }}
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Reply & Forward */}
-                    <ActionPanel.Section title='Reply & Forward'>
-                      <Action.Push
-                        title='Reply'
-                        icon={Icon.Reply}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'r',
-                        }}
-                        target={
-                          <ComposeForm
-                            mode={{ type: 'reply', threadId: thread.id }}
-                            initialAccount={thread.account}
-                            accounts={accountList}
-                            onSent={revalidate}
-                          />
-                        }
-                      />
-                      <Action.Push
-                        title='Reply All'
-                        icon={Icon.Reply}
-                        shortcut={{
-                          modifiers: ['ctrl', 'shift'],
-                          key: 'r',
-                        }}
-                        target={
-                          <ComposeForm
-                            mode={{ type: 'reply', threadId: thread.id, replyAll: true }}
-                            initialAccount={thread.account}
-                            accounts={accountList}
-                            onSent={revalidate}
-                          />
-                        }
-                      />
-                      <Action.Push
-                        title='Forward'
-                        icon={Icon.Forward}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'f',
-                        }}
-                        target={
-                          <ComposeForm
-                            mode={{ type: 'forward', threadId: thread.id }}
-                            initialAccount={thread.account}
-                            accounts={accountList}
-                            onSent={revalidate}
-                          />
-                        }
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Copy */}
-                    <ActionPanel.Section title='Copy'>
-                      <Action.CopyToClipboard
-                        title='Copy Thread ID'
-                        content={thread.id}
-                      />
-                      <Action.CopyToClipboard
-                        title='Copy Subject'
-                        content={thread.subject}
-                      />
-                      <Action.CopyToClipboard
-                        title='Copy Sender Email'
-                        content={thread.from.email}
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Danger */}
-                    <ActionPanel.Section>
-                      <Action
-                        title='Trash'
-                        icon={Icon.Trash}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'backspace',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          await client.trash({
-                            threadId: thread.id,
-                          })
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: 'Trashed',
-                          })
-                          revalidate()
-                        }}
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Utility */}
-                    <ActionPanel.Section>
-                      <Action
-                        title='Refresh'
-                        icon={Icon.ArrowClockwise}
-                        shortcut={{
-                          modifiers: ['ctrl', 'shift'],
-                          key: 'r',
-                        }}
-                        onAction={() => revalidate()}
-                      />
-                      <Action
-                        title='Toggle Detail'
-                        icon={Icon.Sidebar}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'd',
-                        }}
-                        onAction={() => setIsShowingDetail((v) => !v)}
-                      />
-                    </ActionPanel.Section>
                   </ActionPanel>
                 }
               />
