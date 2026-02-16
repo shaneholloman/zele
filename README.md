@@ -11,8 +11,15 @@
 
 Multi-account Gmail and Google Calendar client with OAuth2 auth, SQLite cache, and YAML output.
 
+Requires [bun](https://bun.sh):
+
 ```bash
-npm install -g zele
+# install bun (skip if already installed)
+curl -fsSL https://bun.sh/install | bash   # macOS/Linux
+powershell -c "irm bun.sh/install.ps1|iex" # Windows
+
+# install zele
+bun install -g zele
 ```
 
 ## Setup
