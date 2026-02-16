@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.14
+
+- **Mail:** Add `--attach` flag to `mail send` command for sending file attachments (supports multiple files)
+- **Mail TUI:** Auto-mark threads as read when opening detail view
+- **Mail TUI:** Persist selected account and detail panel visibility across sessions
+- **Output:** Clean up command outputs by removing comment prefixes
+- **Build:** Drop bin/zele shell wrapper, point bin to dist/cli.js directly (requires bun installation)
+- **Dependencies:** Bump termcast to 1.3.48 for latest TUI improvements
+
 ## 0.3.13
 
 - **Mail TUI:** Add global mutation loading state for archive, star, trash, and mark read/unread operations
