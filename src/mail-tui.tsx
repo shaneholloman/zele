@@ -34,6 +34,7 @@ import {
   useNavigation,
   showFailureToast,
 } from 'termcast'
+// @ts-expect-error https://github.com/anomalyco/opentui/pull/614
 import { useTerminalDimensions } from '@opentui/react'
 import { useCachedPromise, useCachedState } from '@termcast/utils'
 import { useState, useMemo, useCallback, useEffect } from 'react'

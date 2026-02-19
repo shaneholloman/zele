@@ -26,6 +26,8 @@
   "dependencies": {
     "@googleapis/gmail": "^16.1.1",
     "@libsql/client": "^0.15.15",
+    "@opentui/core": "^0.1.80",
+    "@opentui/react": "^0.1.80",
     "@prisma/adapter-libsql": "7.3.0",
     "@prisma/client": "7.3.0",
     "@termcast/utils": "^2.2.7",
