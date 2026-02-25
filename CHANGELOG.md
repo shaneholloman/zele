@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.15
+
+**Mail TUI: Mailbox folder switching**
+
+The actions panel (`Ctrl+K`) now has a **Mailbox** section to switch between folders without leaving the TUI:
+
+| Folder | Gmail label |
+|--------|-------------|
+| Inbox | `INBOX` |
+| Sent | `SENT` |
+| Starred | `STARRED` |
+| Drafts | `DRAFT` |
+| Archive | (no label) |
+| Spam | `SPAM` |
+| Trash | `TRASH` |
+| All Mail | `UNREAD` |
+
+The search bar placeholder updates to reflect the active folder (e.g. `Search Sent...`). Active folder is persisted across sessions.
+
+**Mail TUI: Compose/reply placeholder with signature template**
+
+The body field in reply, reply-all, and forward forms now shows a multi-line placeholder with a signature block:
+
+```
+Type your reply...
+
+---
+
+Best,
+Name
+```
+
+**Security fixes** (thanks @nullvariable for all four!)
+
+- **Attachment path traversal** — `attachment get` now validates that the resolved output path stays within `--out-dir`, stripping directory components, null bytes, control chars, and Windows reserved names from filenames. Filenames are capped at 255 characters.
+- **CRLF injection in email headers** — `In-Reply-To` and `References` header values are sanitized before being passed to mimetext, preventing header injection via malicious message-id values (CWE-93).
+- **Database file permissions** — `~/.zele` directory is created with mode `0700` and database files (`sqlite.db`, `-wal`, `-shm`) are secured with mode `0600`, preventing token exposure on multi-user systems.
+- **Gmail query injection via folder param** — the `folder` parameter is validated against an allowlist before being interpolated into Gmail search queries.
+
+**Dependencies:** termcast `1.3.50 → 1.3.53`, tuistory `0.0.15 → 0.0.16`
+
 ## 0.3.14
 
 - **Mail:** Add `--attach` flag to `mail send` command for sending file attachments (supports multiple files)
