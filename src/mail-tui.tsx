@@ -79,6 +79,17 @@ const ACCOUNT_COLORS = [
 const ADD_ACCOUNT = '__add_account__'
 const MANAGE_ACCOUNTS = '__manage_accounts__'
 
+const FOLDER_OPTIONS = [
+  { id: 'inbox', label: 'Inbox', icon: Icon.Envelope },
+  { id: 'sent', label: 'Sent', icon: Icon.PaperAirplane },
+  { id: 'starred', label: 'Starred', icon: Icon.Star },
+  { id: 'drafts', label: 'Drafts', icon: Icon.Pencil },
+  { id: 'archive', label: 'Archive', icon: Icon.Tray },
+  { id: 'spam', label: 'Spam', icon: Icon.ExclamationMark },
+  { id: 'trash', label: 'Trash', icon: Icon.Trash },
+  { id: 'all', label: 'All Mail', icon: Icon.List },
+] as const
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -710,6 +721,11 @@ export default function Command() {
     'all',
     { cacheNamespace: CACHE_NAMESPACE },
   )
+  const [activeFolder, setActiveFolder] = useCachedState(
+    'activeFolder',
+    'inbox' as string,
+    { cacheNamespace: CACHE_NAMESPACE },
+  )
   const [searchText, setSearchText] = useState('')
   const [isShowingDetail, setIsShowingDetail] = useCachedState(
     'isShowingDetail',
@@ -742,7 +758,7 @@ export default function Command() {
     pagination,
     revalidate,
   } = useCachedPromise(
-    (query: string, account: string) => {
+    (query: string, account: string, folder: string) => {
       return async ({ cursor }: { page: number; cursor?: MailCursor }) => {
         const accountFilter = account === 'all' ? undefined : [account]
         const clients = await getClients(accountFilter)
@@ -754,6 +770,7 @@ export default function Command() {
           const { email, client } = clients[0]!
           const result = await client.listThreads({
             query: query || undefined,
+            folder,
             maxResults: pageSize,
             pageToken: pageToken || undefined,
           })
@@ -794,6 +811,7 @@ export default function Command() {
 
             const result = await client.listThreads({
               query: query || undefined,
+              folder,
               maxResults: pageSize,
               pageToken: previousByAccount[email] ?? undefined,
             })
@@ -843,7 +861,7 @@ export default function Command() {
         }
       }
     },
-    [searchText, selectedAccount, pageSize],
+    [searchText, selectedAccount, activeFolder, pageSize],
     { keepPreviousData: true },
   )
 
@@ -943,7 +961,7 @@ export default function Command() {
       isLoading={isLoading || accounts.isLoading || isMutating}
       isShowingDetail={isShowingDetail}
       spacingMode={LIST_SPACING_MODE}
-      searchBarPlaceholder='Search emails...'
+      searchBarPlaceholder={`Search ${FOLDER_OPTIONS.find((f) => f.id === activeFolder)?.label ?? 'emails'}...`}
       onSearchTextChange={setSearchText}
       throttle
       pagination={pagination ? { ...pagination, pageSize } : undefined}
@@ -1000,7 +1018,7 @@ export default function Command() {
             // Detail panel: latest message body as markdown
             const detail = isShowingDetail ? (
               <List.Item.Detail
-                markdown={`# ${thread.subject}\n\n${thread.snippet}`}
+                markdown={`\n\n${thread.snippet}`}
                 metadata={
                   <List.Item.Detail.Metadata>
                     <List.Item.Detail.Metadata.Label
@@ -1116,6 +1134,16 @@ export default function Command() {
                             icon={Icon.XMarkCircle}
                             onAction={() => setSelectedThreads([])}
                           />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Mailbox'>
+                          {FOLDER_OPTIONS.map((f) => (
+                            <Action
+                              key={f.id}
+                              title={f.label}
+                              icon={activeFolder === f.id ? Icon.CheckCircle : Icon.Circle}
+                              onAction={() => setActiveFolder(f.id)}
+                            />
+                          ))}
                         </ActionPanel.Section>
                         <ActionPanel.Section>
                           <Action
@@ -1294,6 +1322,16 @@ export default function Command() {
                               revalidate()
                             })}
                           />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Mailbox'>
+                          {FOLDER_OPTIONS.map((f) => (
+                            <Action
+                              key={f.id}
+                              title={f.label}
+                              icon={activeFolder === f.id ? Icon.CheckCircle : Icon.Circle}
+                              onAction={() => setActiveFolder(f.id)}
+                            />
+                          ))}
                         </ActionPanel.Section>
                         <ActionPanel.Section>
                           <Action
