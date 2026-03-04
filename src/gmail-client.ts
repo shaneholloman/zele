@@ -173,6 +173,15 @@ function sanitizeSnippet(snippet: string): string {
     .trim()
 }
 
+/**
+ * Sanitize header values to prevent CRLF injection attacks.
+ * The mimetext library does not sanitize custom header values, so newlines
+ * in In-Reply-To or References could inject arbitrary headers.
+ */
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\r\n]/g, ' ').trim()
+}
+
 function encodeBase64Url(data: string | Buffer) {
   const buf = typeof data === 'string' ? Buffer.from(data) : data
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -204,6 +213,24 @@ function gmailBoundary<T>(email: string, fn: () => Promise<T>) {
       : new ApiError({ reason: String(err), cause: err }),
   })
 }
+
+/**
+ * Known folder names that map to Gmail system folders/labels.
+ * Used to validate custom label names and prevent query injection.
+ */
+const KNOWN_FOLDERS = new Set([
+  'inbox',
+  'sent',
+  'trash',
+  'bin',
+  'spam',
+  'drafts',
+  'draft',
+  'starred',
+  'archive',
+  'snoozed',
+  'all',
+])
 
 export class GmailClient {
   private gmail: gmail_v1.Gmail
@@ -353,7 +380,7 @@ export class GmailClient {
       const cached = await this.getCachedThread(t.id)
       if (cached && (!t.historyId || !cached.historyId || t.historyId === cached.historyId)) {
         return {
-          parsed: GmailClient.parseRawThreadListItem(cached),
+          parsed: this.parseThreadListItem(cached),
           raw: cached,
         }
       }
@@ -371,11 +398,11 @@ export class GmailClient {
       if (detail instanceof AuthError) return detail
       if (detail instanceof Error) return null
 
-      const parsed = GmailClient.parseRawThread(detail.data)
+      const parsed = this.parseThread(detail.data)
       await this.cacheThreadData(t.id, detail.data, parsed)
 
       return {
-        parsed: GmailClient.parseRawThreadListItem(detail.data),
+        parsed: this.parseThreadListItem(detail.data),
         raw: detail.data,
       }
     })
@@ -397,7 +424,7 @@ export class GmailClient {
     // Check cache
     const cached = await this.getCachedThread(threadId)
     if (cached) {
-      return { parsed: GmailClient.parseRawThread(cached), raw: cached }
+      return { parsed: this.parseThread(cached), raw: cached }
     }
 
     const res = await withRetry(() =>
@@ -408,7 +435,7 @@ export class GmailClient {
       }),
     )
 
-    const parsed = GmailClient.parseRawThread(res.data)
+    const parsed = this.parseThread(res.data)
     const result: ThreadResult = { parsed, raw: res.data }
 
     // Write cache
@@ -909,11 +936,11 @@ export class GmailClient {
   // Labels CRUD
   // =========================================================================
 
-  async listLabels(): Promise<{ parsed: ReturnType<typeof GmailClient.parseRawLabels>; raw: gmail_v1.Schema$Label[] } | AuthError | ApiError> {
+  async listLabels(): Promise<{ parsed: ReturnType<GmailClient['parseLabels']>; raw: gmail_v1.Schema$Label[] } | AuthError | ApiError> {
     // Check cache
     const cached = await this.getCachedLabels()
     if (cached) {
-      return { parsed: GmailClient.parseRawLabels(cached), raw: cached }
+      return { parsed: this.parseLabels(cached), raw: cached }
     }
 
     const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
@@ -928,7 +955,7 @@ export class GmailClient {
     // Write cache
     await this.cacheLabelsData(rawLabels)
 
-    return { parsed: GmailClient.parseRawLabels(rawLabels), raw: rawLabels }
+    return { parsed: this.parseLabels(rawLabels), raw: rawLabels }
   }
 
   async getLabel({ labelId }: { labelId: string }) {
@@ -1166,12 +1193,12 @@ export class GmailClient {
   }
 
   // =========================================================================
-  // Static: parse raw Google API responses (used by cache readers)
+  // Parsing: raw Google API responses → typed objects
   // =========================================================================
 
   /** Parse a raw gmail_v1.Schema$Thread (format: full) into ThreadData. */
-  static parseRawThread(raw: gmail_v1.Schema$Thread): ThreadData {
-    const messages = (raw.messages ?? []).map((m) => GmailClient.parseRawMessage(m))
+  parseThread(raw: gmail_v1.Schema$Thread): ThreadData {
+    const messages = (raw.messages ?? []).map((m) => this.parseMessage(m))
 
     if (messages.length === 0) {
       return {
@@ -1206,7 +1233,7 @@ export class GmailClient {
   }
 
   /** Parse a raw gmail_v1.Schema$Message into ParsedMessage. */
-  static parseRawMessage(message: gmail_v1.Schema$Message): ParsedMessage {
+  parseMessage(message: gmail_v1.Schema$Message): ParsedMessage {
     const headers = message.payload?.headers ?? []
     const labelIds = message.labelIds ?? []
 
@@ -1220,7 +1247,7 @@ export class GmailClient {
       .map((h) => h.value ?? '')
       .filter((v) => v.length > 0)
 
-    const { body, mimeType, textBody } = GmailClient.extractBodyStatic(message.payload ?? {})
+    const { body, mimeType, textBody } = this.extractBody(message.payload ?? {})
 
     return {
       id: message.id ?? '',
@@ -1247,15 +1274,16 @@ export class GmailClient {
       body,
       mimeType,
       textBody,
-      attachments: GmailClient.extractAttachmentMetaStatic(message.payload?.parts ?? []),
+      attachments: this.extractAttachmentMeta(message.payload?.parts ?? []),
     }
   }
 
-  /** Parse raw gmail_v1.Schema$Thread (format: metadata) into ThreadListItem. */
-  static parseRawThreadListItem(raw: gmail_v1.Schema$Thread): ThreadListItem {
+  /** Parse raw gmail_v1.Schema$Thread (format: metadata) into ThreadListItem.
+   *  Shows the other party in conversations where user sent the latest message. */
+  parseThreadListItem(raw: gmail_v1.Schema$Thread): ThreadListItem {
     const messages = raw.messages ?? []
-    const latest =
-      messages.findLast((m) => !m.labelIds?.includes('DRAFT')) ?? messages[messages.length - 1]
+    const nonDraftMessages = messages.filter((m) => !m.labelIds?.includes('DRAFT'))
+    const latest = nonDraftMessages[nonDraftMessages.length - 1] ?? messages[messages.length - 1]
 
     const headers = latest?.payload?.headers ?? []
     const allLabels = [...new Set(messages.flatMap((m) => m.labelIds ?? []))]
@@ -1263,21 +1291,45 @@ export class GmailClient {
     const getHeader = (name: string) =>
       headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? null
 
+    // Determine display sender — show other party when user sent the latest message
+    let displayFrom = parseFrom(getHeader('from') ?? '')
+    const latestIsFromUser = latest?.labelIds?.includes('SENT') ?? false
+
+    if (latestIsFromUser && this.account?.email) {
+      const getMsgHeader = (msg: gmail_v1.Schema$Message, name: string) =>
+        msg.payload?.headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? null
+
+      // Find most recent message NOT from the user
+      const otherPartyMsg = nonDraftMessages.findLast((m) => !m.labelIds?.includes('SENT'))
+      if (otherPartyMsg) {
+        const fromHeader = getMsgHeader(otherPartyMsg, 'from')
+        if (fromHeader) displayFrom = parseFrom(fromHeader)
+      } else {
+        // All messages from user — show first recipient
+        const firstMsg = nonDraftMessages[0] ?? messages[0]
+        if (firstMsg) {
+          const toHeader = getMsgHeader(firstMsg, 'to') ?? ''
+          const recipients = parseAddressList(toHeader)
+          if (recipients[0]) displayFrom = recipients[0]
+        }
+      }
+    }
+
     return {
       id: raw.id ?? '',
       historyId: raw.historyId ?? null,
       snippet: sanitizeSnippet(latest?.snippet ?? ''),
       subject: (getHeader('subject') ?? '(no subject)').replace(/"/g, '').trim(),
-      from: parseFrom(getHeader('from') ?? ''),
+      from: displayFrom,
       date: getHeader('date') ?? '',
       labelIds: allLabels,
       unread: allLabels.includes('UNREAD'),
-      messageCount: messages.filter((m) => !m.labelIds?.includes('DRAFT')).length,
+      messageCount: nonDraftMessages.length,
     }
   }
 
   /** Parse raw gmail_v1.Schema$Label[] from labels.list into our label objects. */
-  static parseRawLabels(rawLabels: gmail_v1.Schema$Label[]) {
+  parseLabels(rawLabels: gmail_v1.Schema$Label[]) {
     return rawLabels.map((label) => ({
       id: label.id ?? '',
       name: label.name ?? '',
@@ -1294,19 +1346,15 @@ export class GmailClient {
   }
 
   /** Parse raw gmail_v1.Schema$Label[] (with counts) into label count objects. */
-  static parseRawLabelCounts(
-    rawLabels: gmail_v1.Schema$Label[],
-    archiveEstimate: number | null,
-  ) {
-    const result = rawLabels
-      .map((detail) => {
-        const labelName = (detail.name ?? detail.id ?? '').toLowerCase()
-        const isTotalLabel = labelName === 'draft' || labelName === 'sent'
-        return {
-          label: labelName === 'draft' ? 'drafts' : labelName,
-          count: Number(isTotalLabel ? detail.threadsTotal : detail.threadsUnread) || 0,
-        }
-      })
+  parseLabelCounts(rawLabels: gmail_v1.Schema$Label[], archiveEstimate: number | null) {
+    const result = rawLabels.map((detail) => {
+      const labelName = (detail.name ?? detail.id ?? '').toLowerCase()
+      const isTotalLabel = labelName === 'draft' || labelName === 'sent'
+      return {
+        label: labelName === 'draft' ? 'drafts' : labelName,
+        count: Number(isTotalLabel ? detail.threadsTotal : detail.threadsUnread) || 0,
+      }
+    })
 
     if (archiveEstimate !== null) {
       result.push({ label: 'archive', count: archiveEstimate })
@@ -1316,10 +1364,10 @@ export class GmailClient {
   }
 
   // =========================================================================
-  // Private static: body/attachment extraction (for static parse methods)
+  // Private: body/attachment extraction
   // =========================================================================
 
-  private static extractBodyStatic(payload: gmail_v1.Schema$MessagePart): {
+  private extractBody(payload: gmail_v1.Schema$MessagePart): {
     body: string
     mimeType: string
     textBody: string | null
@@ -1337,8 +1385,8 @@ export class GmailClient {
       return { body: '', mimeType: 'text/plain', textBody: null }
     }
 
-    const htmlData = GmailClient.findBodyPartStatic(payload.parts, 'text/html')
-    const textData = GmailClient.findBodyPartStatic(payload.parts, 'text/plain')
+    const htmlData = this.findBodyPart(payload.parts, 'text/html')
+    const textData = this.findBodyPart(payload.parts, 'text/plain')
     const textBody = textData ? decodeBase64Url(textData) : null
 
     if (htmlData) {
@@ -1351,7 +1399,7 @@ export class GmailClient {
 
     for (const part of payload.parts) {
       if (part.parts) {
-        const nested = GmailClient.extractBodyStatic(part)
+        const nested = this.extractBody(part)
         if (nested.body) return nested
       }
     }
@@ -1359,20 +1407,20 @@ export class GmailClient {
     return { body: '', mimeType: 'text/plain', textBody: null }
   }
 
-  private static findBodyPartStatic(parts: gmail_v1.Schema$MessagePart[], mimeType: string): string | null {
+  private findBodyPart(parts: gmail_v1.Schema$MessagePart[], mimeType: string): string | null {
     for (const part of parts) {
       if (part.mimeType === mimeType && part.body?.data) {
         return part.body.data
       }
       if (part.parts) {
-        const found = GmailClient.findBodyPartStatic(part.parts, mimeType)
+        const found = this.findBodyPart(part.parts, mimeType)
         if (found) return found
       }
     }
     return null
   }
 
-  private static extractAttachmentMetaStatic(parts: gmail_v1.Schema$MessagePart[]): AttachmentMeta[] {
+  private extractAttachmentMeta(parts: gmail_v1.Schema$MessagePart[]): AttachmentMeta[] {
     const results: AttachmentMeta[] = []
 
     for (const part of parts) {
@@ -1393,7 +1441,7 @@ export class GmailClient {
       }
 
       if (part.parts) {
-        results.push(...GmailClient.extractAttachmentMetaStatic(part.parts))
+        results.push(...this.extractAttachmentMeta(part.parts))
       }
     }
 
@@ -1599,21 +1647,6 @@ export class GmailClient {
   }
 
   // =========================================================================
-  // Private: message parsing (delegates to static methods)
-  // =========================================================================
-
-  private parseMessage(message: gmail_v1.Schema$Message): ParsedMessage {
-    return GmailClient.parseRawMessage(message)
-  }
-
-  private parseThreadListItem(
-    threadId: string,
-    thread: gmail_v1.Schema$Thread,
-  ): ThreadListItem {
-    return GmailClient.parseRawThreadListItem({ ...thread, id: threadId })
-  }
-
-  // =========================================================================
   // Private: MIME message construction
   // =========================================================================
 
@@ -1664,7 +1697,7 @@ export class GmailClient {
     })
 
     if (inReplyTo) {
-      msg.setHeader('In-Reply-To', inReplyTo)
+      msg.setHeader('In-Reply-To', sanitizeHeaderValue(inReplyTo))
     }
 
     if (references) {
@@ -1672,6 +1705,7 @@ export class GmailClient {
         .split(' ')
         .filter(Boolean)
         .map((ref) => {
+          ref = sanitizeHeaderValue(ref)
           if (!ref.startsWith('<')) ref = `<${ref}`
           if (!ref.endsWith('>')) ref = `${ref}>`
           return ref
@@ -1756,7 +1790,21 @@ export class GmailClient {
 
     // For non-inbox folders, use Gmail search syntax.
     // Caller-provided labelIds are preserved as additional filters.
-    switch (folder) {
+
+    // Normalize folder name to lowercase for consistent matching
+    const normalizedFolder = folder.toLowerCase()
+
+    // Validate custom label names to prevent query injection.
+    // Gmail query operators like "OR", "from:", parentheses, etc. could manipulate search results.
+    // Known folders are handled by the switch cases below; custom labels must be safe characters only.
+    // Slashes are allowed for nested labels (e.g., "work/projects").
+    if (!KNOWN_FOLDERS.has(normalizedFolder) && !/^[\w\/-]+$/.test(normalizedFolder)) {
+      throw new Error(
+        `Invalid folder/label name: "${folder}". Use alphanumeric characters, underscores, hyphens, and slashes only.`,
+      )
+    }
+
+    switch (normalizedFolder) {
       case 'sent':
         q = `in:sent ${q}`.trim()
         break
@@ -1784,8 +1832,8 @@ export class GmailClient {
         q = `in:anywhere ${q}`.trim()
         break
       default:
-        // Treat as a label name
-        q = `label:${folder} ${q}`.trim()
+        // Treat as a label name (use normalized for consistency)
+        q = `label:${normalizedFolder} ${q}`.trim()
         break
     }
 

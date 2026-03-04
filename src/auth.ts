@@ -444,7 +444,7 @@ async function getAuthCodeFromBrowser(
             status: 'success',
             sectionTitle: 'Next steps',
             commands: [
-              { comment: 'Plan: verify the account is saved', command: 'zele whoami' },
+              { comment: 'Plan: open the TUI to read your emails', command: 'zele' },
               { comment: 'Plan: list your latest threads', command: 'zele mail list' },
               { comment: 'Plan: search with Gmail query syntax', command: 'zele mail search "from:github"' },
             ],

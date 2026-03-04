@@ -6,7 +6,9 @@
 import type { Goke } from 'goke'
 import { z } from 'zod'
 import fs from 'node:fs'
+import path from 'node:path'
 import React from 'react'
+import { lookup as mimeLookup } from 'mrmime'
 import { getClients, getClient, listAccounts, login } from '../auth.js'
 import type { ThreadListResult } from '../gmail-client.js'
 import { AuthError } from '../api-utils.js'
@@ -23,19 +25,6 @@ export function registerMailCommands(cli: Goke) {
   // mail (TUI)
   // =========================================================================
 
-  cli
-    .command('mail', 'Browse emails in TUI')
-    .action(async () => {
-      const accounts = await listAccounts()
-      if (accounts.length === 0) {
-        const result = await login()
-        if (result instanceof Error) handleCommandError(result)
-      }
-
-      const { renderWithProviders } = await import('termcast')
-      const { default: Command } = await import('../mail-tui.js')
-      await renderWithProviders(React.createElement(Command))
-    })
 
   // =========================================================================
   // mail list
@@ -86,7 +75,7 @@ export function registerMailCommands(cli: Goke) {
         .slice(0, max)
 
       if (merged.length === 0) {
-        out.hint('No threads found')
+        out.printList([], { summary: 'No threads found' })
         return
       }
 
@@ -101,9 +90,8 @@ export function registerMailCommands(cli: Goke) {
           date: out.formatDate(t.date),
           messages: t.messageCount,
         })),
+        { summary: `${merged.length} threads (${folder})` },
       )
-
-      out.hint(`${merged.length} threads (${folder})`)
     })
 
   // =========================================================================
@@ -150,7 +138,7 @@ export function registerMailCommands(cli: Goke) {
         .slice(0, max)
 
       if (merged.length === 0) {
-        out.hint(`No results for "${query}"`)
+        out.printList([], { summary: `No results for "${query}"` })
         return
       }
 
@@ -165,9 +153,8 @@ export function registerMailCommands(cli: Goke) {
           date: out.formatDate(t.date),
           messages: t.messageCount,
         })),
+        { summary: `${merged.length} results for "${query}"` },
       )
-
-      out.hint(`${merged.length} results for "${query}"`)
     })
 
   // =========================================================================
@@ -280,6 +267,7 @@ export function registerMailCommands(cli: Goke) {
     .option('--cc <cc>', z.string().describe('CC recipients (comma-separated)'))
     .option('--bcc <bcc>', z.string().describe('BCC recipients (comma-separated)'))
     .option('--from <from>', z.string().describe('Send-as alias email'))
+    .option('--attach <attach>', z.array(z.string()).describe('File to attach (repeatable: --attach a.pdf --attach b.png)'))
     .action(async (options) => {
       if (!options.to) {
         out.error('--to is required')
@@ -308,6 +296,22 @@ export function registerMailCommands(cli: Goke) {
         process.exit(1)
       }
 
+      // Resolve attachment file paths (one file per --attach flag)
+      const attachments = options.attach
+        ? options.attach.map((filePath) => {
+            const resolved = path.resolve(filePath)
+            if (!fs.existsSync(resolved)) {
+              out.error(`Attachment not found: ${resolved}`)
+              process.exit(1)
+            }
+            return {
+              filename: path.basename(resolved),
+              mimeType: mimeLookup(resolved) ?? 'application/octet-stream',
+              content: fs.readFileSync(resolved),
+            }
+          })
+        : undefined
+
       const parseEmails = (str: string) =>
         str.split(',').map((e) => e.trim()).filter(Boolean).map((email) => ({ email }))
 
@@ -320,6 +324,7 @@ export function registerMailCommands(cli: Goke) {
         cc: options.cc ? parseEmails(options.cc) : undefined,
         bcc: options.bcc ? parseEmails(options.bcc) : undefined,
         fromEmail: options.from,
+        attachments,
       })
 
       out.printYaml(result)

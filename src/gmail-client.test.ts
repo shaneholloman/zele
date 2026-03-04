@@ -2,7 +2,12 @@
 // Captures entity/encoding regressions in snippet fields from Gmail metadata responses.
 
 import { expect, test } from 'vitest'
+import { OAuth2Client } from 'google-auth-library'
 import { GmailClient } from './gmail-client.js'
+
+// Create a real client instance for testing (no account context needed for parsing tests)
+const auth = new OAuth2Client()
+const client = new GmailClient({ auth })
 
 test('thread list snippet decodes HTML entities for TUI preview', () => {
   const rawThread = {
@@ -16,7 +21,7 @@ test('thread list snippet decodes HTML entities for TUI preview', () => {
     ],
   }
 
-  const parsed = GmailClient.parseRawThreadListItem(rawThread as any)
+  const parsed = client.parseThreadListItem(rawThread as any)
   expect(parsed.snippet).toBe("It's ready & waiting")
 })
 
@@ -38,7 +43,7 @@ test('message snippet decodes HTML entities for detail preview', () => {
     labelIds: ['INBOX'],
   }
 
-  const parsed = GmailClient.parseRawMessage(rawMessage as any)
+  const parsed = client.parseMessage(rawMessage as any)
   expect(parsed.snippet).toBe("Built with Opus [4.6](https://4.6): you're in")
 })
 
@@ -54,6 +59,6 @@ test('thread list snippet strips zero-width and preheader garbage', () => {
     ],
   }
 
-  const parsed = GmailClient.parseRawThreadListItem(rawThread as any)
+  const parsed = client.parseThreadListItem(rawThread as any)
   expect(parsed.snippet).toBe('A host sent you a message')
 })

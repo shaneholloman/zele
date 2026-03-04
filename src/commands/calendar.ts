@@ -55,12 +55,11 @@ export function registerCalendarCommands(cli: Goke) {
       )
 
       if (merged.length === 0) {
-        out.hint('No calendars found')
+        out.printList([], { summary: 'No calendars found' })
         return
       }
 
-      out.printList(merged)
-      out.hint(`${merged.length} calendars`)
+      out.printList(merged, { summary: `${merged.length} calendars` })
     })
 
   // =========================================================================
@@ -175,7 +174,7 @@ export function registerCalendarCommands(cli: Goke) {
         .slice(0, max)
 
       if (merged.length === 0) {
-        out.hint('No events found')
+        out.printList([], { summary: 'No events found' })
         return
       }
 
@@ -192,10 +191,8 @@ export function registerCalendarCommands(cli: Goke) {
             ...(e.calendarId && e.calendarId !== calendarId ? { calendar: e.calendarId } : {}),
           }
         }),
-        { nextPage: allResults[0]?.result.nextPageToken },
+        { nextPage: allResults[0]?.result.nextPageToken, summary: `${merged.length} events` },
       )
-
-      out.hint(`${merged.length} events`)
     })
 
   // =========================================================================

@@ -34,23 +34,10 @@ import {
   useNavigation,
   showFailureToast,
 } from 'termcast'
-import { useCachedPromise } from '@termcast/utils'
+// @ts-expect-error https://github.com/anomalyco/opentui/pull/614
+import { useTerminalDimensions } from '@opentui/react'
+import { useCachedPromise, useCachedState } from '@termcast/utils'
 import { useState, useMemo, useCallback, useEffect } from 'react'
-
-function useTerminalRows(): number | undefined {
-  const [rows, setRows] = useState<number | undefined>(() =>
-    typeof process !== 'undefined' && process.stdout?.rows
-      ? process.stdout.rows
-      : undefined,
-  )
-  useEffect(() => {
-    const handler = () =>
-      setRows(process.stdout?.rows ?? undefined)
-    process.stdout?.on('resize', handler)
-    return () => { process.stdout?.off('resize', handler) }
-  }, [])
-  return rows
-}
 
 import {
   getClients,
@@ -77,6 +64,10 @@ const DEFAULT_PAGE_SIZE = 25
 const MIN_PAGE_SIZE = 10
 const VISIBLE_ROWS_OFFSET = 6
 
+/** Spacing mode for the mail list. 'relaxed' renders each item as 3 lines. */
+const LIST_SPACING_MODE: 'default' | 'relaxed' = 'relaxed'
+const LINES_PER_ITEM = LIST_SPACING_MODE === 'relaxed' ? 3 : 1
+
 const ACCOUNT_COLORS = [
   Color.Blue,
   Color.Green,
@@ -87,6 +78,17 @@ const ACCOUNT_COLORS = [
 
 const ADD_ACCOUNT = '__add_account__'
 const MANAGE_ACCOUNTS = '__manage_accounts__'
+
+const FOLDER_OPTIONS = [
+  { id: 'inbox', label: 'Inbox', icon: Icon.Envelope },
+  { id: 'sent', label: 'Sent', icon: Icon.PaperAirplane },
+  { id: 'starred', label: 'Starred', icon: Icon.Star },
+  { id: 'drafts', label: 'Drafts', icon: Icon.Pencil },
+  { id: 'archive', label: 'Archive', icon: Icon.Tray },
+  { id: 'spam', label: 'Spam', icon: Icon.ExclamationMark },
+  { id: 'trash', label: 'Trash', icon: Icon.Trash },
+  { id: 'all', label: 'All Mail', icon: Icon.List },
+] as const
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -154,7 +156,9 @@ type MailCursor =
 
 function getPageSizeFromTerminalHeight(rows?: number): number {
   if (typeof rows !== 'number' || rows <= 0) return DEFAULT_PAGE_SIZE
-  return Math.max(MIN_PAGE_SIZE, rows - VISIBLE_ROWS_OFFSET)
+  const visibleRows = rows - VISIBLE_ROWS_OFFSET
+  const itemCount = Math.floor(visibleRows / LINES_PER_ITEM)
+  return Math.max(MIN_PAGE_SIZE, itemCount)
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +221,7 @@ function AccountDropdown({
           />
         ))}
       </List.Dropdown.Section>
-      <List.Dropdown.Section>
+      <List.Dropdown.Section title='Manage Accounts'>
         <List.Dropdown.Item
           title='Add Account'
           value={ADD_ACCOUNT}
@@ -357,7 +361,6 @@ function ManageAccounts({
               <Action
                 title='Logout Account'
                 icon={Icon.Trash}
-                style={Action.Style.Destructive}
                 onAction={() => handleRemoved(a.email)}
               />
             </ActionPanel>
@@ -382,130 +385,143 @@ function ManageAccounts({
 }
 
 // ---------------------------------------------------------------------------
-// Reply Form
+// Compose Form (unified: reply, reply all, forward)
 // ---------------------------------------------------------------------------
 
-function ReplyForm({
-  threadId,
-  account,
-  replyAll,
-  revalidate,
-}: {
-  threadId: string
-  account: string
-  replyAll?: boolean
-  revalidate: () => void
-}) {
-  const { pop } = useNavigation()
-  const [isLoading, setIsLoading] = useState(false)
+type ComposeMode =
+  | { type: 'reply'; threadId: string; replyAll?: boolean }
+  | { type: 'forward'; threadId: string }
 
-  const handleSubmit = async (values: { body: string }) => {
-    if (!values.body?.trim()) {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: 'Body is required',
-      })
-      return
-    }
-    setIsLoading(true)
-    const { client } = await getClient([account])
-    const result = await client.replyToThread({
-      threadId,
-      body: values.body,
-      replyAll,
-    })
-    setIsLoading(false)
-    if (result instanceof Error) {
-      await showFailureToast(result, { title: 'Failed to send reply' })
-      return
-    }
-    await showToast({ style: Toast.Style.Success, title: 'Reply sent' })
-    revalidate()
-    pop()
-  }
-
-  return (
-    <Form
-      isLoading={isLoading}
-      navigationTitle={replyAll ? 'Reply All' : 'Reply'}
-      actions={
-        <ActionPanel>
-          <Action.SubmitForm title='Send Reply' onSubmit={handleSubmit} />
-        </ActionPanel>
-      }
-    >
-      <Form.TextArea
-        id='body'
-        title='Message'
-        placeholder='Type your reply...'
-      />
-    </Form>
-  )
+interface ComposeFormProps {
+  mode: ComposeMode
+  initialAccount: string
+  accounts: AuthStatus[]
+  onSent?: () => void
 }
 
-// ---------------------------------------------------------------------------
-// Forward Form
-// ---------------------------------------------------------------------------
-
-function ForwardForm({
-  threadId,
-  account,
-  revalidate,
-}: {
-  threadId: string
-  account: string
-  revalidate: () => void
-}) {
+function ComposeForm({ mode, initialAccount, accounts, onSent }: ComposeFormProps) {
   const { pop } = useNavigation()
   const [isLoading, setIsLoading] = useState(false)
+  const [selectedAccount, setSelectedAccount] = useState(initialAccount)
 
-  const handleSubmit = async (values: { to: string; body: string }) => {
-    if (!values.to?.trim()) {
+  const navigationTitle =
+    mode.type === 'forward'
+      ? 'Forward'
+      : mode.replyAll
+        ? 'Reply All'
+        : 'Reply'
+
+  const bodyPlaceholder = mode.type === 'forward'
+    ? `Add a message (optional)...
+
+---
+
+Best,
+Name`
+    : `Type your reply...
+
+---
+
+Best,
+Name`
+
+  const handleSubmit = async (values: { to?: string; body?: string }) => {
+    // Validate based on mode
+    if (mode.type === 'forward' && !values.to?.trim()) {
       await showToast({
         style: Toast.Style.Failure,
         title: 'Recipient is required',
       })
       return
     }
-    setIsLoading(true)
-    const recipients = values.to
-      .split(',')
-      .map((e) => ({ email: e.trim() }))
-      .filter((e) => e.email)
-    const { client } = await getClient([account])
-    const result = await client.forwardThread({
-      threadId,
-      to: recipients,
-      body: values.body || undefined,
-    })
-    setIsLoading(false)
-    if (result instanceof Error) {
-      await showFailureToast(result, { title: 'Failed to forward' })
+    if (mode.type !== 'forward' && !values.body?.trim()) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: 'Message is required',
+      })
       return
     }
-    await showToast({
-      style: Toast.Style.Success,
-      title: `Forwarded to ${values.to}`,
-    })
-    revalidate()
+
+    setIsLoading(true)
+    const { client } = await getClient([selectedAccount])
+
+    let result: Error | unknown
+    if (mode.type === 'forward') {
+      const recipients = (values.to ?? '')
+        .split(',')
+        .map((e) => ({ email: e.trim() }))
+        .filter((e) => e.email)
+      result = await client.forwardThread({
+        threadId: mode.threadId,
+        to: recipients,
+        body: values.body || undefined,
+      })
+    } else {
+      result = await client.replyToThread({
+        threadId: mode.threadId,
+        body: values.body ?? '',
+        replyAll: mode.replyAll,
+      })
+    }
+
+    setIsLoading(false)
+
+    if (result instanceof Error) {
+      await showFailureToast(result, {
+        title: mode.type === 'forward' ? 'Failed to forward' : 'Failed to send reply',
+      })
+      return
+    }
+
+    const successTitle =
+      mode.type === 'forward'
+        ? `Forwarded to ${values.to}`
+        : 'Reply sent'
+    await showToast({ style: Toast.Style.Success, title: successTitle })
+    onSent?.()
     pop()
   }
 
   return (
     <Form
       isLoading={isLoading}
-      navigationTitle='Forward'
+      navigationTitle={navigationTitle}
       actions={
         <ActionPanel>
-          <Action.SubmitForm title='Forward' onSubmit={handleSubmit} />
+          <Action.SubmitForm
+            title={mode.type === 'forward' ? 'Forward' : 'Send Reply'}
+            onSubmit={handleSubmit}
+          />
         </ActionPanel>
       }
     >
-      <Form.TextField id='to' title='To' placeholder='recipient@example.com' />
+      {accounts.length > 1 && (
+        <Form.Dropdown
+          id='account'
+          title='From'
+          value={selectedAccount}
+          onChange={(v) => setSelectedAccount(Array.isArray(v) ? v[0] ?? initialAccount : v)}
+        >
+          {accounts.map((a) => (
+            <Form.Dropdown.Item
+              key={a.email}
+              value={a.email}
+              title={a.email}
+            />
+          ))}
+        </Form.Dropdown>
+      )}
+      {mode.type === 'forward' && (
+        <Form.TextField
+          id='to'
+          title='To'
+          placeholder='recipient@example.com'
+        />
+      )}
       <Form.TextArea
         id='body'
         title='Message'
-        placeholder='Optional message to prepend...'
+        placeholder={bodyPlaceholder}
       />
     </Form>
   )
@@ -518,10 +534,12 @@ function ForwardForm({
 function ThreadDetail({
   threadId,
   account,
+  accounts,
   revalidate,
 }: {
   threadId: string
   account: string
+  accounts: AuthStatus[]
   revalidate: () => void
 }) {
   const thread = useCachedPromise(
@@ -636,10 +654,11 @@ function ThreadDetail({
               icon={Icon.Reply}
               shortcut={{ modifiers: ['ctrl'], key: 'r' }}
               target={
-                <ReplyForm
-                  threadId={threadId}
-                  account={account}
-                  revalidate={revalidate}
+                <ComposeForm
+                  mode={{ type: 'reply', threadId }}
+                  initialAccount={account}
+                  accounts={accounts}
+                  onSent={revalidate}
                 />
               }
             />
@@ -651,11 +670,11 @@ function ThreadDetail({
                 key: 'r',
               }}
               target={
-                <ReplyForm
-                  threadId={threadId}
-                  account={account}
-                  replyAll
-                  revalidate={revalidate}
+                <ComposeForm
+                  mode={{ type: 'reply', threadId, replyAll: true }}
+                  initialAccount={account}
+                  accounts={accounts}
+                  onSent={revalidate}
                 />
               }
             />
@@ -664,10 +683,11 @@ function ThreadDetail({
               icon={Icon.Forward}
               shortcut={{ modifiers: ['ctrl'], key: 'f' }}
               target={
-                <ForwardForm
-                  threadId={threadId}
-                  account={account}
-                  revalidate={revalidate}
+                <ComposeForm
+                  mode={{ type: 'forward', threadId }}
+                  initialAccount={account}
+                  accounts={accounts}
+                  onSent={revalidate}
                 />
               }
             />
@@ -692,12 +712,40 @@ function ThreadDetail({
 // Main Command
 // ---------------------------------------------------------------------------
 
+const CACHE_NAMESPACE = 'mail-tui'
+
 export default function Command() {
-  const [selectedAccount, setSelectedAccount] = useState('all')
+  const { push } = useNavigation()
+  const [selectedAccount, setSelectedAccount] = useCachedState(
+    'selectedAccount',
+    'all',
+    { cacheNamespace: CACHE_NAMESPACE },
+  )
+  const [activeFolder, setActiveFolder] = useCachedState(
+    'activeFolder',
+    'inbox' as string,
+    { cacheNamespace: CACHE_NAMESPACE },
+  )
   const [searchText, setSearchText] = useState('')
-  const [isShowingDetail, setIsShowingDetail] = useState(true)
+  const [isShowingDetail, setIsShowingDetail] = useCachedState(
+    'isShowingDetail',
+    true,
+    { cacheNamespace: CACHE_NAMESPACE },
+  )
   const [selectedThreads, setSelectedThreads] = useState<string[]>([])
-  const terminalRows = useTerminalRows()
+  const [activeMutations, setActiveMutations] = useState(0)
+  const isMutating = activeMutations > 0
+  const { height: terminalRows } = useTerminalDimensions()
+
+  /** Wrap async mutation calls to track global loading state. */
+  const withMutation = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    setActiveMutations((n) => n + 1)
+    try {
+      return await fn()
+    } finally {
+      setActiveMutations((n) => n - 1)
+    }
+  }, [])
   const pageSize = getPageSizeFromTerminalHeight(terminalRows)
 
   const accounts = useAccounts()
@@ -710,7 +758,7 @@ export default function Command() {
     pagination,
     revalidate,
   } = useCachedPromise(
-    (query: string, account: string) => {
+    (query: string, account: string, folder: string) => {
       return async ({ cursor }: { page: number; cursor?: MailCursor }) => {
         const accountFilter = account === 'all' ? undefined : [account]
         const clients = await getClients(accountFilter)
@@ -722,6 +770,7 @@ export default function Command() {
           const { email, client } = clients[0]!
           const result = await client.listThreads({
             query: query || undefined,
+            folder,
             maxResults: pageSize,
             pageToken: pageToken || undefined,
           })
@@ -762,6 +811,7 @@ export default function Command() {
 
             const result = await client.listThreads({
               query: query || undefined,
+              folder,
               maxResults: pageSize,
               pageToken: previousByAccount[email] ?? undefined,
             })
@@ -811,7 +861,7 @@ export default function Command() {
         }
       }
     },
-    [searchText, selectedAccount, pageSize],
+    [searchText, selectedAccount, activeFolder, pageSize],
     { keepPreviousData: true },
   )
 
@@ -873,42 +923,45 @@ export default function Command() {
     ) => {
       if (selectedThreads.length === 0) return
 
-      // Group selected threads by account
-      const byAccount = new Map<string, string[]>()
-      for (const tid of selectedThreads) {
-        const thread = allThreads.find((t: ThreadItem) => t.id === tid)
-        if (!thread) continue
-        const list = byAccount.get(thread.account) ?? []
-        list.push(tid)
-        byAccount.set(thread.account, list)
-      }
-
-      for (const [acct, ids] of byAccount) {
-        const { client } = await getClient([acct])
-        const result = await fn(client, ids)
-        if (result instanceof Error) {
-          await showFailureToast(result, {
-            title: `Failed to ${actionName}`,
-          })
-          return
+      await withMutation(async () => {
+        // Group selected threads by account
+        const byAccount = new Map<string, string[]>()
+        for (const tid of selectedThreads) {
+          const thread = allThreads.find((t: ThreadItem) => t.id === tid)
+          if (!thread) continue
+          const list = byAccount.get(thread.account) ?? []
+          list.push(tid)
+          byAccount.set(thread.account, list)
         }
-      }
 
-      await showToast({
-        style: Toast.Style.Success,
-        title: `${actionName}: ${selectedThreads.length} thread(s)`,
+        for (const [acct, ids] of byAccount) {
+          const { client } = await getClient([acct])
+          const result = await fn(client, ids)
+          if (result instanceof Error) {
+            await showFailureToast(result, {
+              title: `Failed to ${actionName}`,
+            })
+            return
+          }
+        }
+
+        await showToast({
+          style: Toast.Style.Success,
+          title: `${actionName}: ${selectedThreads.length} thread(s)`,
+        })
+        setSelectedThreads([])
+        revalidate()
       })
-      setSelectedThreads([])
-      revalidate()
     },
-    [selectedThreads, allThreads, revalidate],
+    [selectedThreads, allThreads, revalidate, withMutation],
   )
 
   return (
     <List
-      isLoading={isLoading || accounts.isLoading}
+      isLoading={isLoading || accounts.isLoading || isMutating}
       isShowingDetail={isShowingDetail}
-      searchBarPlaceholder='Search emails...'
+      spacingMode={LIST_SPACING_MODE}
+      searchBarPlaceholder={`Search ${FOLDER_OPTIONS.find((f) => f.id === activeFolder)?.label ?? 'emails'}...`}
       onSearchTextChange={setSearchText}
       throttle
       pagination={pagination ? { ...pagination, pageSize } : undefined}
@@ -917,10 +970,10 @@ export default function Command() {
           <AccountDropdown
             accounts={accountList}
             value={selectedAccount}
-            onChange={setSelectedAccount}
-            onAdded={handleAccountAdded}
-            onRemoved={handleAccountRemoved}
-          />
+              onChange={setSelectedAccount}
+              onAdded={handleAccountAdded}
+              onRemoved={handleAccountRemoved}
+            />
         ) : undefined
       }
     >
@@ -965,7 +1018,7 @@ export default function Command() {
             // Detail panel: latest message body as markdown
             const detail = isShowingDetail ? (
               <List.Item.Detail
-                markdown={`# ${thread.subject}\n\n${thread.snippet}`}
+                markdown={`\n\n${thread.snippet}`}
                 metadata={
                   <List.Item.Detail.Metadata>
                     <List.Item.Detail.Metadata.Label
@@ -1026,294 +1079,276 @@ export default function Command() {
                 detail={detail}
                 actions={
                   <ActionPanel>
-                    {/* Selection actions (when items are selected) */}
-                    {hasSelection && (
-                      <ActionPanel.Section title='Selection'>
-                        <Action
-                          title={
-                            isSelected ? 'Deselect Thread' : 'Select Thread'
-                          }
-                          icon={isSelected ? Icon.CheckCircle : Icon.Circle}
-                          onAction={() => toggleSelection(thread.id)}
-                        />
-                        <Action
-                          title={`Archive ${selectedThreads.length} Selected`}
-                          icon={Icon.Tray}
-                          onAction={() =>
-                            handleBulkAction('Archived', (c, ids) =>
-                              c.archive({
-                                threadIds: ids,
-                              }),
-                            )
-                          }
-                        />
-                        <Action
-                          title={`Mark ${selectedThreads.length} as Read`}
-                          icon={Icon.Eye}
-                          onAction={() =>
-                            handleBulkAction('Marked as read', (c, ids) =>
-                              c.markAsRead({
-                                threadIds: ids,
-                              }),
-                            )
-                          }
-                        />
-                        <Action
-                          title={`Star ${selectedThreads.length} Selected`}
-                          icon={Icon.Star}
-                          onAction={() =>
-                            handleBulkAction('Starred', (c, ids) =>
-                              c.star({
-                                threadIds: ids,
-                              }),
-                            )
-                          }
-                        />
-                        <Action
-                          title={`Trash ${selectedThreads.length} Selected`}
-                          icon={Icon.Trash}
-                          style={Action.Style.Destructive}
-                          onAction={() =>
-                            handleBulkAction('Trashed', async (c, ids) => {
-                              for (const id of ids) {
-                                await c.trash({
-                                  threadId: id,
-                                })
+                    {hasSelection ? (
+                      // ─────────────────────────────────────────────
+                      // SELECTION MODE
+                      // ─────────────────────────────────────────────
+                      <>
+                        <ActionPanel.Section title='Selection'>
+                          <Action
+                            title={isSelected ? 'Deselect Thread' : 'Select Thread'}
+                            icon={isSelected ? Icon.Circle : Icon.CheckCircle}
+                            shortcut={{ modifiers: ['ctrl'], key: 'x' }}
+                            onAction={() => toggleSelection(thread.id)}
+                          />
+                          <Action
+                            title={`Archive ${selectedThreads.length} Selected`}
+                            icon={Icon.Tray}
+                            onAction={() =>
+                              handleBulkAction('Archived', (c, ids) =>
+                                c.archive({ threadIds: ids }),
+                              )
+                            }
+                          />
+                          <Action
+                            title={`Mark ${selectedThreads.length} as Read`}
+                            icon={Icon.Eye}
+                            onAction={() =>
+                              handleBulkAction('Marked as read', (c, ids) =>
+                                c.markAsRead({ threadIds: ids }),
+                              )
+                            }
+                          />
+                          <Action
+                            title={`Star ${selectedThreads.length} Selected`}
+                            icon={Icon.Star}
+                            onAction={() =>
+                              handleBulkAction('Starred', (c, ids) =>
+                                c.star({ threadIds: ids }),
+                              )
+                            }
+                          />
+                          <Action
+                            title={`Trash ${selectedThreads.length} Selected`}
+                            icon={Icon.Trash}
+                            onAction={() =>
+                              handleBulkAction('Trashed', async (c, ids) => {
+                                for (const id of ids) {
+                                  await c.trash({ threadId: id })
+                                }
+                              })
+                            }
+                          />
+                          <Action
+                            title='Deselect All'
+                            icon={Icon.XMarkCircle}
+                            onAction={() => setSelectedThreads([])}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Mailbox'>
+                          {FOLDER_OPTIONS.map((f) => (
+                            <Action
+                              key={f.id}
+                              title={f.label}
+                              icon={activeFolder === f.id ? Icon.CheckCircle : Icon.Circle}
+                              onAction={() => setActiveFolder(f.id)}
+                            />
+                          ))}
+                        </ActionPanel.Section>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Refresh'
+                            icon={Icon.ArrowClockwise}
+                            shortcut={{ modifiers: ['ctrl', 'shift'], key: 'r' }}
+                            onAction={() => revalidate()}
+                          />
+                          <Action
+                            title='Toggle Detail'
+                            icon={Icon.Sidebar}
+                            shortcut={{ modifiers: ['ctrl'], key: 'd' }}
+                            onAction={() => setIsShowingDetail((v) => !v)}
+                          />
+                        </ActionPanel.Section>
+                      </>
+                    ) : (
+                      // ─────────────────────────────────────────────
+                      // NORMAL MODE
+                      // ─────────────────────────────────────────────
+                      <>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Open Thread'
+                            icon={Icon.Eye}
+                            onAction={async () => {
+                              push(
+                                <ThreadDetail
+                                  threadId={thread.id}
+                                  account={thread.account}
+                                  accounts={accountList}
+                                  revalidate={revalidate}
+                                />,
+                              )
+                              if (thread.unread) {
+                                const { client } = await getClient([thread.account])
+                                const result = await client.markAsRead({ threadIds: [thread.id] })
+                                if (result instanceof Error) return
+                                revalidate()
                               }
-                            })
-                          }
-                        />
-                        <Action
-                          title='Deselect All'
-                          icon={Icon.XMarkCircle}
-                          onAction={() => setSelectedThreads([])}
-                        />
-                      </ActionPanel.Section>
+                            }}
+                          />
+                          <Action
+                            title='Select Thread'
+                            icon={Icon.CheckCircle}
+                            shortcut={{ modifiers: ['ctrl'], key: 'x' }}
+                            onAction={() => toggleSelection(thread.id)}
+                          />
+                          <Action
+                            title={thread.unread ? 'Mark as Read' : 'Mark as Unread'}
+                            icon={thread.unread ? Icon.Eye : Icon.EyeDisabled}
+                            shortcut={{ modifiers: ['ctrl'], key: 'u' }}
+                            onAction={() => withMutation(async () => {
+                              const { client } = await getClient([thread.account])
+                              const result = thread.unread
+                                ? await client.markAsRead({ threadIds: [thread.id] })
+                                : await client.markAsUnread({ threadIds: [thread.id] })
+                              if (result instanceof Error) {
+                                await showFailureToast(result)
+                                return
+                              }
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: thread.unread ? 'Marked as read' : 'Marked as unread',
+                              })
+                              revalidate()
+                            })}
+                          />
+                          <Action
+                            title='Archive'
+                            icon={Icon.Tray}
+                            shortcut={{ modifiers: ['ctrl'], key: 'e' }}
+                            onAction={() => withMutation(async () => {
+                              const { client } = await getClient([thread.account])
+                              const result = await client.archive({ threadIds: [thread.id] })
+                              if (result instanceof Error) {
+                                await showFailureToast(result)
+                                return
+                              }
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: 'Archived',
+                              })
+                              revalidate()
+                            })}
+                          />
+                          <Action
+                            title={thread.labelIds.includes('STARRED') ? 'Unstar' : 'Star'}
+                            icon={Icon.Star}
+                            shortcut={{ modifiers: ['ctrl'], key: 's' }}
+                            onAction={() => withMutation(async () => {
+                              const { client } = await getClient([thread.account])
+                              const isStarred = thread.labelIds.includes('STARRED')
+                              const result = isStarred
+                                ? await client.unstar({ threadIds: [thread.id] })
+                                : await client.star({ threadIds: [thread.id] })
+                              if (result instanceof Error) {
+                                await showFailureToast(result)
+                                return
+                              }
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: isStarred ? 'Unstarred' : 'Starred',
+                              })
+                              revalidate()
+                            })}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Reply & Forward'>
+                          <Action.Push
+                            title='Reply'
+                            icon={Icon.Reply}
+                            shortcut={{ modifiers: ['ctrl'], key: 'r' }}
+                            target={
+                              <ComposeForm
+                                mode={{ type: 'reply', threadId: thread.id }}
+                                initialAccount={thread.account}
+                                accounts={accountList}
+                                onSent={revalidate}
+                              />
+                            }
+                          />
+                          <Action.Push
+                            title='Reply All'
+                            icon={Icon.Reply}
+                            shortcut={{ modifiers: ['ctrl', 'shift'], key: 'r' }}
+                            target={
+                              <ComposeForm
+                                mode={{ type: 'reply', threadId: thread.id, replyAll: true }}
+                                initialAccount={thread.account}
+                                accounts={accountList}
+                                onSent={revalidate}
+                              />
+                            }
+                          />
+                          <Action.Push
+                            title='Forward'
+                            icon={Icon.Forward}
+                            shortcut={{ modifiers: ['ctrl'], key: 'f' }}
+                            target={
+                              <ComposeForm
+                                mode={{ type: 'forward', threadId: thread.id }}
+                                initialAccount={thread.account}
+                                accounts={accountList}
+                                onSent={revalidate}
+                              />
+                            }
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Copy'>
+                          <Action.CopyToClipboard
+                            title='Copy Thread ID'
+                            content={thread.id}
+                          />
+                          <Action.CopyToClipboard
+                            title='Copy Subject'
+                            content={thread.subject}
+                          />
+                          <Action.CopyToClipboard
+                            title='Copy Sender Email'
+                            content={thread.from.email}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Trash'
+                            icon={Icon.Trash}
+                            shortcut={{ modifiers: ['ctrl'], key: 'backspace' }}
+                            onAction={() => withMutation(async () => {
+                              const { client } = await getClient([thread.account])
+                              await client.trash({ threadId: thread.id })
+                              await showToast({
+                                style: Toast.Style.Success,
+                                title: 'Trashed',
+                              })
+                              revalidate()
+                            })}
+                          />
+                        </ActionPanel.Section>
+                        <ActionPanel.Section title='Mailbox'>
+                          {FOLDER_OPTIONS.map((f) => (
+                            <Action
+                              key={f.id}
+                              title={f.label}
+                              icon={activeFolder === f.id ? Icon.CheckCircle : Icon.Circle}
+                              onAction={() => setActiveFolder(f.id)}
+                            />
+                          ))}
+                        </ActionPanel.Section>
+                        <ActionPanel.Section>
+                          <Action
+                            title='Refresh'
+                            icon={Icon.ArrowClockwise}
+                            shortcut={{ modifiers: ['ctrl', 'shift'], key: 'r' }}
+                            onAction={() => revalidate()}
+                          />
+                          <Action
+                            title='Toggle Detail'
+                            icon={Icon.Sidebar}
+                            shortcut={{ modifiers: ['ctrl'], key: 'd' }}
+                            onAction={() => setIsShowingDetail((v) => !v)}
+                          />
+                        </ActionPanel.Section>
+                      </>
                     )}
-
-                    {/* Primary actions */}
-                    <ActionPanel.Section>
-                      <Action.Push
-                        title='Open Thread'
-                        icon={Icon.Eye}
-                        target={
-                          <ThreadDetail
-                            threadId={thread.id}
-                            account={thread.account}
-                            revalidate={revalidate}
-                          />
-                        }
-                      />
-                      {!hasSelection && (
-                        <Action
-                          title='Select Thread'
-                          icon={Icon.CheckCircle}
-                          shortcut={{
-                            modifiers: ['ctrl'],
-                            key: 'x',
-                          }}
-                          onAction={() => toggleSelection(thread.id)}
-                        />
-                      )}
-                      <Action
-                        title={
-                          thread.unread ? 'Mark as Read' : 'Mark as Unread'
-                        }
-                        icon={thread.unread ? Icon.Eye : Icon.EyeDisabled}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'u',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          const result = thread.unread
-                            ? await client.markAsRead({
-                                threadIds: [thread.id],
-                              })
-                            : await client.markAsUnread({
-                                threadIds: [thread.id],
-                              })
-                          if (result instanceof Error) {
-                            await showFailureToast(result)
-                            return
-                          }
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: thread.unread
-                              ? 'Marked as read'
-                              : 'Marked as unread',
-                          })
-                          revalidate()
-                        }}
-                      />
-                      <Action
-                        title='Archive'
-                        icon={Icon.Tray}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'e',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          const result = await client.archive({
-                            threadIds: [thread.id],
-                          })
-                          if (result instanceof Error) {
-                            await showFailureToast(result)
-                            return
-                          }
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: 'Archived',
-                          })
-                          revalidate()
-                        }}
-                      />
-                      <Action
-                        title={
-                          thread.labelIds.includes('STARRED')
-                            ? 'Unstar'
-                            : 'Star'
-                        }
-                        icon={Icon.Star}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 's',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          const isStarred = thread.labelIds.includes('STARRED')
-                          const result = isStarred
-                            ? await client.unstar({
-                                threadIds: [thread.id],
-                              })
-                            : await client.star({
-                                threadIds: [thread.id],
-                              })
-                          if (result instanceof Error) {
-                            await showFailureToast(result)
-                            return
-                          }
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: isStarred ? 'Unstarred' : 'Starred',
-                          })
-                          revalidate()
-                        }}
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Reply & Forward */}
-                    <ActionPanel.Section title='Reply & Forward'>
-                      <Action.Push
-                        title='Reply'
-                        icon={Icon.Reply}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'r',
-                        }}
-                        target={
-                          <ReplyForm
-                            threadId={thread.id}
-                            account={thread.account}
-                            revalidate={revalidate}
-                          />
-                        }
-                      />
-                      <Action.Push
-                        title='Reply All'
-                        icon={Icon.Reply}
-                        shortcut={{
-                          modifiers: ['ctrl', 'shift'],
-                          key: 'r',
-                        }}
-                        target={
-                          <ReplyForm
-                            threadId={thread.id}
-                            account={thread.account}
-                            replyAll
-                            revalidate={revalidate}
-                          />
-                        }
-                      />
-                      <Action.Push
-                        title='Forward'
-                        icon={Icon.Forward}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'f',
-                        }}
-                        target={
-                          <ForwardForm
-                            threadId={thread.id}
-                            account={thread.account}
-                            revalidate={revalidate}
-                          />
-                        }
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Copy */}
-                    <ActionPanel.Section title='Copy'>
-                      <Action.CopyToClipboard
-                        title='Copy Thread ID'
-                        content={thread.id}
-                      />
-                      <Action.CopyToClipboard
-                        title='Copy Subject'
-                        content={thread.subject}
-                      />
-                      <Action.CopyToClipboard
-                        title='Copy Sender Email'
-                        content={thread.from.email}
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Danger */}
-                    <ActionPanel.Section>
-                      <Action
-                        title='Trash'
-                        icon={Icon.Trash}
-                        style={Action.Style.Destructive}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'backspace',
-                        }}
-                        onAction={async () => {
-                          const { client } = await getClient([thread.account])
-                          await client.trash({
-                            threadId: thread.id,
-                          })
-                          await showToast({
-                            style: Toast.Style.Success,
-                            title: 'Trashed',
-                          })
-                          revalidate()
-                        }}
-                      />
-                    </ActionPanel.Section>
-
-                    {/* Utility */}
-                    <ActionPanel.Section>
-                      <Action
-                        title='Refresh'
-                        icon={Icon.ArrowClockwise}
-                        shortcut={{
-                          modifiers: ['ctrl', 'shift'],
-                          key: 'r',
-                        }}
-                        onAction={() => revalidate()}
-                      />
-                      <Action
-                        title='Toggle Detail'
-                        icon={Icon.Sidebar}
-                        shortcut={{
-                          modifiers: ['ctrl'],
-                          key: 'd',
-                        }}
-                        onAction={() => setIsShowingDetail((v) => !v)}
-                      />
-                    </ActionPanel.Section>
                   </ActionPanel>
                 }
               />

@@ -11,8 +11,15 @@
 
 Multi-account Gmail and Google Calendar client with OAuth2 auth, SQLite cache, and YAML output.
 
+Requires [bun](https://bun.sh):
+
 ```bash
-npm install -g zele
+# install bun (skip if already installed)
+curl -fsSL https://bun.sh/install | bash   # macOS/Linux
+powershell -c "irm bun.sh/install.ps1|iex" # Windows
+
+# install zele
+bun install -g zele
 ```
 
 ## Setup
@@ -122,6 +129,24 @@ zele cal delete <event-id>        # delete an event
 zele cal respond <event-id>       # accept/decline
 zele cal freebusy                 # check availability
 ```
+
+#### Shared / subscribed calendars
+
+Zele uses Google CalDAV for calendar access. By default, Google only syncs calendars you **own** over CalDAV — shared or subscribed calendars (e.g. a partner's calendar) won't appear in `zele cal list` even after accepting the share invitation.
+
+To fix this, visit Google's CalDAV sync settings and enable the shared calendar:
+
+1. Open **https://www.google.com/calendar/syncselect** (logged in as the account you use with zele)
+2. Check the box next to any shared calendar you want to access
+3. Click **Save**
+
+After that, `zele cal list` will show the shared calendar and you can query it:
+
+```bash
+zele cal events --calendar "other-person@gmail.com" --week
+```
+
+> **Why is this needed?** Google's CalDAV endpoint only exposes calendars marked for sync (originally designed for mobile device sync). The Google Calendar web UI uses a different internal API, so calendars visible there may not appear via CalDAV until explicitly enabled at the sync settings page.
 
 ### Attachments
 

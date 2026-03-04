@@ -40,7 +40,7 @@ export function registerLabelCommands(cli: Goke) {
       )
 
       if (merged.length === 0) {
-        out.hint('No labels found')
+        out.printList([], { summary: 'No labels found' })
         return
       }
 
@@ -58,9 +58,8 @@ export function registerLabelCommands(cli: Goke) {
           name: l.name,
           type: l.type,
         })),
+        { summary: `${merged.length} label(s)` },
       )
-
-      out.hint(`${merged.length} label(s)`)
     })
 
   // =========================================================================
@@ -168,7 +167,7 @@ export function registerLabelCommands(cli: Goke) {
       const withCounts = merged.filter((c) => c.count > 0).sort((a, b) => b.count - a.count)
 
       if (withCounts.length === 0) {
-        out.hint('All clear — no unread messages')
+        out.printList([], { summary: 'All clear — no unread messages' })
         return
       }
 
@@ -179,6 +178,7 @@ export function registerLabelCommands(cli: Goke) {
           label: c.label,
           count: c.count,
         })),
+        { summary: `${withCounts.length} label(s) with unread` },
       )
     })
 }

@@ -1,9 +1,70 @@
 # Changelog
 
+## 0.3.15
+
+**Mail TUI: Mailbox folder switching**
+
+The actions panel (`Ctrl+K`) now has a **Mailbox** section to switch between folders without leaving the TUI:
+
+| Folder | Gmail label |
+|--------|-------------|
+| Inbox | `INBOX` |
+| Sent | `SENT` |
+| Starred | `STARRED` |
+| Drafts | `DRAFT` |
+| Archive | (no label) |
+| Spam | `SPAM` |
+| Trash | `TRASH` |
+| All Mail | `UNREAD` |
+
+The search bar placeholder updates to reflect the active folder (e.g. `Search Sent...`). Active folder is persisted across sessions.
+
+**Mail TUI: Compose/reply placeholder with signature template**
+
+The body field in reply, reply-all, and forward forms now shows a multi-line placeholder with a signature block:
+
+```
+Type your reply...
+
+---
+
+Best,
+Name
+```
+
+**Security fixes** (thanks @nullvariable for all four!)
+
+- **Attachment path traversal** — `attachment get` now validates that the resolved output path stays within `--out-dir`, stripping directory components, null bytes, control chars, and Windows reserved names from filenames. Filenames are capped at 255 characters.
+- **CRLF injection in email headers** — `In-Reply-To` and `References` header values are sanitized before being passed to mimetext, preventing header injection via malicious message-id values (CWE-93).
+- **Database file permissions** — `~/.zele` directory is created with mode `0700` and database files (`sqlite.db`, `-wal`, `-shm`) are secured with mode `0600`, preventing token exposure on multi-user systems.
+- **Gmail query injection via folder param** — the `folder` parameter is validated against an allowlist before being interpolated into Gmail search queries.
+
+**Dependencies:** termcast `1.3.50 → 1.3.53`, tuistory `0.0.15 → 0.0.16`
+
+## 0.3.14
+
+- **Mail:** Add `--attach` flag to `mail send` command for sending file attachments (supports multiple files)
+- **Mail TUI:** Auto-mark threads as read when opening detail view
+- **Mail TUI:** Persist selected account and detail panel visibility across sessions
+- **Output:** Clean up command outputs by removing comment prefixes
+- **Build:** Drop bin/zele shell wrapper, point bin to dist/cli.js directly (requires bun installation)
+- **Dependencies:** Bump termcast to 1.3.48 for latest TUI improvements
+
 ## 0.3.13
+
+- **Mail TUI:** Add global mutation loading state for archive, star, trash, and mark read/unread operations
+- **Mail TUI:** Separate action panels for selection mode vs normal mode for clearer UI
+- **Mail TUI:** Fix pagination calculation to account for relaxed list spacing (3 lines per item)
+- **Mail TUI:** Unify reply/forward forms into single ComposeForm with account selector dropdown
+- **Mail TUI:** Clean up account dropdown styling and remove destructive action styles
+- **Gmail Client:** Show other party in thread list instead of own email when user sent latest reply
+- **Gmail Client:** Convert static parse methods to instance methods for simpler code
+- **Dependencies:** Bump termcast to 1.3.47 to fix React reconciler issues on Windows
+## 0.3.13 (fork)
 
 - **Filters:** Add `filter list`, `filter create`, `filter delete` commands for managing Gmail filters
 - **Auth:** Add `gmail.settings.basic` scope for filter management
+
 
 ## 0.3.12
 
