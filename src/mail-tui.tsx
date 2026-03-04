@@ -34,9 +34,23 @@ import {
   useNavigation,
   showFailureToast,
 } from 'termcast'
-import { useTerminalDimensions } from '@opentui/react'
 import { useCachedPromise } from '@termcast/utils'
 import { useState, useMemo, useCallback, useEffect } from 'react'
+
+function useTerminalRows(): number | undefined {
+  const [rows, setRows] = useState<number | undefined>(() =>
+    typeof process !== 'undefined' && process.stdout?.rows
+      ? process.stdout.rows
+      : undefined,
+  )
+  useEffect(() => {
+    const handler = () =>
+      setRows(process.stdout?.rows ?? undefined)
+    process.stdout?.on('resize', handler)
+    return () => { process.stdout?.off('resize', handler) }
+  }, [])
+  return rows
+}
 
 import {
   getClients,
@@ -683,7 +697,7 @@ export default function Command() {
   const [searchText, setSearchText] = useState('')
   const [isShowingDetail, setIsShowingDetail] = useState(true)
   const [selectedThreads, setSelectedThreads] = useState<string[]>([])
-  const { height: terminalRows } = useTerminalDimensions()
+  const terminalRows = useTerminalRows()
   const pageSize = getPageSizeFromTerminalHeight(terminalRows)
 
   const accounts = useAccounts()
