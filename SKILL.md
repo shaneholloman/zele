@@ -29,6 +29,18 @@ Running `zele` with no subcommand launches a human-friendly TUI for browsing ema
 - **Attachments:** list per thread, download
 - **Multi-account:** all commands support `--account <email>` to filter; list/search merge across accounts
 
+## Account discovery
+
+When the user asks to check emails **for a specific account** (e.g. "check my work email", "what's new on my personal Gmail?"), always run `zele whoami` first to list the connected accounts and find the exact email address to pass to `--account`. Never guess the email — use the output of `zele whoami` to pick the right one.
+
+```bash
+# list connected accounts
+zele whoami
+
+# then use the email from the output
+zele mail list --account user@work.com
+```
+
 ## Examples
 
 ```bash
