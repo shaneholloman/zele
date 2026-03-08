@@ -1,7 +1,7 @@
 ---
 name: zele
 description: >
-  Control Gmail and Google Calendar from the terminal. Read, search, send, reply, and forward
+  Control Gmail and Google Calendar via CLI. Read, search, send, reply, and forward
   emails. Create, update, and delete calendar events. Manage drafts, labels, and attachments.
   Supports multiple Google accounts. Use this skill whenever the user asks to check email,
   send messages, schedule meetings, or manage their calendar.
@@ -17,6 +17,9 @@ A multi-account Gmail and Google Calendar client. Output is YAML, pipe-friendly.
 # install (requires bun)
 bun install -g zele
 
+# show connected accounts
+zele whoami
+
 # authenticate (opens browser, supports multiple accounts)
 zele login
 ```
@@ -25,7 +28,7 @@ zele login
 
 ## Important
 
-**Always run `zele --help` before using.** The help output is the source of truth for all commands, options, and syntax. Run `zele <command> --help` for subcommand details (e.g. `zele mail send --help`).
+**Always run `zele --help` before using.** The help output is the source of truth for all commands, options, and syntax. Run `zele <command> --help` for subcommand details (e.g. `zele mail send --help`). NEVER use head to truncate the output. read it fully.
 
 Running `zele` with no subcommand launches a human-friendly TUI for browsing email. **Agents should not use the TUI** — always use the CLI subcommands (`zele mail list`, `zele cal events`, etc.) which output structured YAML.
 
