@@ -162,10 +162,15 @@ export function registerMailCommands(cli: Goke) {
   // =========================================================================
 
   cli
-    .command('mail read <threadId>', 'Read a full email thread')
-    .option('--raw', 'Show raw message (first message only)')
+    .command('mail read [...threadIds]', 'Read full email threads')
+    .option('--raw', 'Show raw message (first message only, single thread)')
     .option('--raw-html', 'Show raw HTML body per message (no markdown conversion)')
-    .action(async (threadId, options) => {
+    .action(async (threadIds, options) => {
+      if (threadIds.length === 0) {
+        out.error('No thread IDs provided')
+        process.exit(1)
+      }
+
       const { client } = await getClient(options.account)
 
       if (options.raw && options.rawHtml) {
@@ -174,7 +179,11 @@ export function registerMailCommands(cli: Goke) {
       }
 
       if (options.raw) {
-        const { parsed: thread } = await client.getThread({ threadId })
+        if (threadIds.length > 1) {
+          out.error('--raw only supports a single thread ID')
+          process.exit(1)
+        }
+        const { parsed: thread } = await client.getThread({ threadId: threadIds[0]! })
         if (thread.messages.length === 0) {
           out.hint('No messages in thread')
           return
@@ -185,72 +194,96 @@ export function registerMailCommands(cli: Goke) {
         return
       }
 
-      const { parsed: thread } = await client.getThread({ threadId })
-
-      if (thread.messages.length === 0) {
-        out.hint('No messages in thread')
-        return
-      }
-
-      if (options.rawHtml) {
-        thread.messages.forEach((msg, index) => {
-          console.log(msg.body)
-          if (index < thread.messages.length - 1) {
-            console.log('\n<!-- ZELE_MESSAGE_SEPARATOR -->\n')
-          }
-        })
-        return
-      }
+      // Fetch all threads concurrently, tolerating individual failures
+      const settled = await Promise.allSettled(
+        threadIds.map((id) => client.getThread({ threadId: id })),
+      )
 
       const w = Math.min(process.stdout.columns || 72, 72)
       const rule = pc.dim('─'.repeat(w))
+      const multi = threadIds.length > 1
 
-      // Render thread header
-      console.log(pc.bold(thread.subject))
-      // Collect unique participants
-      const participants = new Map<string, string>()
-      for (const msg of thread.messages) {
-        participants.set(msg.from.email, msg.from.name || msg.from.email)
-        for (const r of msg.to) participants.set(r.email, r.name || r.email)
-      }
-      const participantStr = [...participants.values()].join(', ')
-      console.log(pc.dim(`${thread.messageCount} message(s) · ${participantStr}`))
-      console.log(pc.dim(`ID: ${thread.id}`))
-      console.log(rule + '\n')
+      for (let i = 0; i < settled.length; i++) {
+        const result = settled[i]!
 
-      // Render each message
-      for (const msg of thread.messages) {
-        const fromStr = out.formatSender(msg.from)
-        const dateStr = out.formatDate(msg.date)
-
-        // Flags as dim tags
-        const flagParts: string[] = []
-        if (msg.unread) flagParts.push(pc.yellow('[unread]'))
-        if (msg.starred) flagParts.push(pc.yellow('[starred]'))
-        const flagStr = flagParts.length > 0 ? ' ' + flagParts.join(' ') : ''
-
-        console.log(pc.bold(`From: `) + fromStr + flagStr)
-        console.log(pc.dim(`  To: ${msg.to.map((t) => t.email).join(', ')}`))
-        if (msg.cc && msg.cc.length > 0) {
-          console.log(pc.dim(`  Cc: ${msg.cc.map((c) => c.email).join(', ')}`))
+        if (multi) {
+          const doubleRule = pc.bold('━'.repeat(w))
+          console.log(doubleRule)
+          console.log(pc.bold(`Thread ${i + 1}/${settled.length}`) + pc.dim(` · ${threadIds[i]}`))
+          console.log(doubleRule)
+          console.log()
         }
-        console.log(pc.dim(`Date: ${dateStr}`))
 
-        if (msg.attachments.length > 0) {
-          const attList = msg.attachments.map((a) => {
-            const size = a.size < 1024 ? `${a.size} B`
-              : a.size < 1048576 ? `${(a.size / 1024).toFixed(1)} KB`
-              : `${(a.size / 1048576).toFixed(1)} MB`
-            return `${a.filename} (${size})`
+        if (result.status === 'rejected') {
+          out.error(`Failed to read thread ${threadIds[i]}: ${String(result.reason)}`)
+          if (multi) console.log()
+          continue
+        }
+
+        const { parsed: thread } = result.value
+
+        if (thread.messages.length === 0) {
+          out.hint('No messages in thread')
+          if (multi) console.log()
+          continue
+        }
+
+        if (options.rawHtml) {
+          thread.messages.forEach((msg, index) => {
+            console.log(msg.body)
+            if (index < thread.messages.length - 1) {
+              console.log('\n<!-- ZELE_MESSAGE_SEPARATOR -->\n')
+            }
           })
-          console.log(pc.dim(`Attachments: ${attList.join(', ')}`))
+          if (multi) console.log()
+          continue
         }
 
-        console.log()
+        // Render thread header
+        console.log(pc.bold(thread.subject))
+        const participants = new Map<string, string>()
+        for (const msg of thread.messages) {
+          participants.set(msg.from.email, msg.from.name || msg.from.email)
+          for (const r of msg.to) participants.set(r.email, r.name || r.email)
+        }
+        const participantStr = [...participants.values()].join(', ')
+        console.log(pc.dim(`${thread.messageCount} message(s) · ${participantStr}`))
+        console.log(pc.dim(`ID: ${thread.id}`))
+        console.log(rule + '\n')
 
-        const body = out.renderEmailBody(msg.body, msg.mimeType)
-        console.log(body)
-        console.log('\n' + rule + '\n')
+        // Render each message
+        for (const msg of thread.messages) {
+          const fromStr = out.formatSender(msg.from)
+          const dateStr = out.formatDate(msg.date)
+
+          const flagParts: string[] = []
+          if (msg.unread) flagParts.push(pc.yellow('[unread]'))
+          if (msg.starred) flagParts.push(pc.yellow('[starred]'))
+          const flagStr = flagParts.length > 0 ? ' ' + flagParts.join(' ') : ''
+
+          console.log(pc.bold(`From: `) + fromStr + flagStr)
+          console.log(pc.dim(`  To: ${msg.to.map((t) => t.email).join(', ')}`))
+          if (msg.cc && msg.cc.length > 0) {
+            console.log(pc.dim(`  Cc: ${msg.cc.map((c) => c.email).join(', ')}`))
+          }
+          console.log(pc.dim(`Date: ${dateStr}`))
+
+          if (msg.attachments.length > 0) {
+            const attList = msg.attachments.map((a) => {
+              const size = a.size < 1024 ? `${a.size} B`
+                : a.size < 1048576 ? `${(a.size / 1024).toFixed(1)} KB`
+                : `${(a.size / 1048576).toFixed(1)} MB`
+              return `${a.filename} (${size})`
+            })
+            console.log(pc.dim(`Attachments: ${attList.join(', ')}`))
+          }
+
+          console.log()
+
+          const body = out.renderEmailBody(msg.body, msg.mimeType)
+          console.log(body)
+          console.log('\n' + rule + '\n')
+        }
       }
     })
 
