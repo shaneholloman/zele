@@ -2,8 +2,7 @@
 // Multi-account support via getClients/getClient like label.ts.
 
 import type { Goke } from 'goke'
-import { z } from 'zod'
-import { getClients, getClient } from '../auth.js'
+import { getClients } from '../auth.js'
 import { AuthError, isScopeError } from '../api-utils.js'
 import * as out from '../output.js'
 
@@ -60,101 +59,10 @@ export function registerFilterCommands(cli: Goke) {
       out.hint(`${merged.length} filter(s)`)
     })
 
-  // =========================================================================
-  // filter create
-  // =========================================================================
-
-  cli
-    .command('mail filter create', 'Create a Gmail filter')
-    .option('--from <from>', z.string().describe('Match sender address'))
-    .option('--query <query>', z.string().describe('Match query string'))
-    .option('--label <label>', z.string().describe('Apply label (created if missing)'))
-    .option('--skip-inbox', z.boolean().default(true).describe('Skip inbox'))
-    .option('--never-spam', z.boolean().default(true).describe('Never mark as spam'))
-    .option('--mark-important', z.boolean().default(true).describe('Mark as important'))
-    .action(async (options) => {
-      if (!options.from && !options.query) {
-        out.error('At least one of --from or --query is required')
-        process.exit(1)
-      }
-
-      const { client } = await getClient(options.account)
-
-      const addLabelIds: string[] = []
-      const removeLabelIds: string[] = []
-
-      // Resolve label name → ID
-      if (options.label) {
-        const labelId = await client.resolveLabel(options.label)
-        if (labelId instanceof Error) {
-          out.error(`Failed to resolve label "${options.label}": ${labelId.message}`)
-          process.exit(1)
-        }
-        addLabelIds.push(labelId)
-      }
-
-      if (options.skipInbox) removeLabelIds.push('INBOX')
-      if (options.neverSpam) removeLabelIds.push('SPAM')
-      if (options.markImportant) addLabelIds.push('IMPORTANT')
-
-      const result = await client.createFilter({
-        from: options.from,
-        query: options.query,
-        addLabelIds: addLabelIds.length ? addLabelIds : undefined,
-        removeLabelIds: removeLabelIds.length ? removeLabelIds : undefined,
-      })
-
-      if (result instanceof Error) {
-        if (isScopeError(result)) {
-          out.error(`Missing required OAuth scopes. Run: zele login to grant updated permissions`)
-        } else {
-          out.error(`Failed to create filter: ${result.message}`)
-        }
-        process.exit(1)
-      }
-
-      out.printYaml({
-        id: result.id,
-        criteria: result.criteria,
-        action: result.action,
-      })
-      out.success('Filter created')
-    })
-
-  // =========================================================================
-  // filter delete
-  // =========================================================================
-
-  cli
-    .command('mail filter delete <filterId>', 'Delete a Gmail filter')
-    .option('--force', 'Skip confirmation')
-    .action(async (filterId, options) => {
-      if (!options.force && process.stdin.isTTY) {
-        const readline = await import('node:readline')
-        const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(`Delete filter ${filterId}? [y/N] `, resolve)
-        })
-        rl.close()
-
-        if (answer.toLowerCase() !== 'y') {
-          out.hint('Cancelled')
-          return
-        }
-      }
-
-      const { client } = await getClient(options.account)
-      const result = await client.deleteFilter(filterId)
-
-      if (result instanceof Error) {
-        if (isScopeError(result)) {
-          out.error(`Missing required OAuth scopes. Run: zele login to grant updated permissions`)
-        } else {
-          out.error(`Failed to delete filter: ${result.message}`)
-        }
-        process.exit(1)
-      }
-
-      out.printYaml({ filter_id: filterId, deleted: true })
-    })
+  // TODO: add `mail filter create` and `mail filter delete` commands once
+  // gmail.settings.basic scope is added to the GCP OAuth consent screen.
+  // The https://mail.google.com/ scope covers reading filters but Google
+  // enforces the narrower scope for write operations (create/delete).
+  // The gmail-client.ts methods (createFilter, deleteFilter, resolveLabel)
+  // are already implemented and ready to use.
 }

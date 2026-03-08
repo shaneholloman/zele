@@ -100,10 +100,4 @@ zele cal freebusy --from today --to +8h
 
 # list Gmail filters
 zele mail filter list
-
-# create a filter (skip inbox, never spam, mark important by default)
-zele mail filter create --from notifications@github.com --label "GitHub"
-
-# delete a filter
-zele mail filter delete <filterId> --force
 ```
