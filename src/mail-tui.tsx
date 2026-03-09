@@ -1195,7 +1195,7 @@ export default function Command() {
                           <Action
                             title={thread.unread ? 'Mark as Read' : 'Mark as Unread'}
                             icon={thread.unread ? Icon.Eye : Icon.EyeDisabled}
-                            shortcut={{ modifiers: ['ctrl'], key: 'u' }}
+                            // shortcut={{ modifiers: ['ctrl'], key: 'u' }}
                             onAction={() => withMutation(async () => {
                               const { client } = await getClient([thread.account])
                               const result = thread.unread
