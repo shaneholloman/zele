@@ -59,6 +59,8 @@ zele mail trash <thread-id>
 zele mail untrash <thread-id>
 zele mail read-mark <thread-id>
 zele mail unread-mark <thread-id>
+zele mail spam <thread-id>
+zele mail unspam <thread-id>
 zele mail label <thread-id>
 zele mail trash-spam
 ```

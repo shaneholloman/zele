@@ -1,4 +1,4 @@
-// Mail action commands: star, unstar, archive, trash, untrash, mark read/unread, label modify.
+// Mail action commands: star, unstar, archive, trash, untrash, mark read/unread, spam, unspam, label modify.
 // Bulk operations on threads — cache invalidation is handled by the client methods.
 
 import type { Goke } from 'goke'
@@ -75,6 +75,18 @@ export function registerMailActionCommands(cli: Goke) {
     .command('mail unread-mark [...threadIds]', 'Mark threads as unread')
     .action(async (threadIds, options) => {
       await bulkAction(threadIds, 'Marked as unread', options.account, (c, ids) => c.markAsUnread({ threadIds: ids }))
+    })
+
+  cli
+    .command('mail spam [...threadIds]', 'Mark threads as spam')
+    .action(async (threadIds, options) => {
+      await bulkAction(threadIds, 'Marked as spam', options.account, (c, ids) => c.markAsSpam({ threadIds: ids }))
+    })
+
+  cli
+    .command('mail unspam [...threadIds]', 'Remove threads from spam')
+    .action(async (threadIds, options) => {
+      await bulkAction(threadIds, 'Removed from spam', options.account, (c, ids) => c.unmarkSpam({ threadIds: ids }))
     })
 
   cli

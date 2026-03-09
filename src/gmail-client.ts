@@ -896,6 +896,24 @@ export class GmailClient {
     await this.invalidateAfterThreadMutation(threadIds)
   }
 
+  async markAsSpam({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
+    const messageIds = await this.getMessageIdsForThreads(threadIds)
+    if (messageIds instanceof Error) return messageIds
+    if (messageIds.length === 0) return
+    await this.batchModifyMessages(messageIds, { addLabelIds: ['SPAM'], removeLabelIds: ['INBOX'] })
+    await this.invalidateAfterThreadMutation(threadIds)
+  }
+
+  async unmarkSpam({ threadIds }: { threadIds: string[] }): Promise<void | AuthError | ApiError> {
+    const messageIds = await this.getMessageIdsForThreads(threadIds, (labelIds) =>
+      labelIds.includes('SPAM'),
+    )
+    if (messageIds instanceof Error) return messageIds
+    if (messageIds.length === 0) return
+    await this.batchModifyMessages(messageIds, { removeLabelIds: ['SPAM'], addLabelIds: ['INBOX'] })
+    await this.invalidateAfterThreadMutation(threadIds)
+  }
+
   /** Invalidate thread cache after a thread mutation. */
   private async invalidateAfterThreadMutation(threadIds: string[]): Promise<void> {
     await this.invalidateThreads(threadIds)

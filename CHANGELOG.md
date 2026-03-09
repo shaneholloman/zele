@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.16
+
+**Mark threads as spam / remove from spam**
+
+Two new mail action commands:
+
+```bash
+zele mail spam <thread-id>      # mark thread as spam (adds SPAM label, removes from inbox)
+zele mail unspam <thread-id>    # remove thread from spam (removes SPAM label, moves to inbox)
+```
+
+Both accept multiple thread IDs like the other bulk actions (`star`, `archive`, etc.).
+
 ## 0.3.15
 
 **Mail TUI: Mailbox folder switching**
