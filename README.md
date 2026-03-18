@@ -41,6 +41,7 @@ zele logout         # remove credentials
 
 ```bash
 zele mail list                    # list recent threads
+zele mail list --filter "is:unread"  # only unread threads
 zele mail search "from:github"   # search with Gmail query syntax
 zele mail read <thread-id>       # read a thread
 zele mail send                    # send an email
@@ -95,9 +96,13 @@ zele mail trash-spam
 Combine multiple operators to narrow results:
 
 ```bash
+zele mail list --filter "is:unread"
+zele mail list --filter "from:github has:attachment" --folder sent
 zele mail search "from:github is:unread newer_than:7d"
 zele mail watch --query "from:github has:attachment"
 ```
+
+`mail list --filter` accepts the same Gmail search operators as `mail search`, and combines with `--folder` and `--label`.
 
 Operators marked **(search only)** are handled server-side by Gmail and only available in `mail search`. Using them in `mail watch --query` prints a warning and skips the operator.
 
