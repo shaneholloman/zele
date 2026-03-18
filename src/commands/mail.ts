@@ -36,6 +36,7 @@ export function registerMailCommands(cli: Goke) {
     .option('--max [max]', 'Max results per page (default: 20)')
     .option('--page <page>', 'Pagination token (requires --account, only works for a single account)')
     .option('--label <label>', 'Filter by label name')
+    .option('--filter <filter>', 'Gmail search filter (e.g. "is:unread", "from:github", "has:attachment")')
     .action(async (options) => {
       const folder = options.folder ?? 'inbox'
       const max = options.max ? Number(options.max) : 20
@@ -54,6 +55,7 @@ export function registerMailCommands(cli: Goke) {
             maxResults: max,
             labelIds: options.label ? [options.label] : undefined,
             pageToken: options.page,
+            query: options.filter,
           })
           if (result instanceof Error) return result
           return { email, result }
