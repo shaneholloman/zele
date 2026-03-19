@@ -66,7 +66,7 @@ export function registerMailActionCommands(cli: Goke) {
     })
 
   cli
-    .command('mail read-mark [...threadIds]', 'Mark threads as read')
+    .command('mail read-mark [...threadIds]', 'Mark threads as read (removes UNREAD label)')
     .action(async (threadIds, options) => {
       await bulkAction(threadIds, 'Marked as read', options.account, (c, ids) => c.markAsRead({ threadIds: ids }))
     })

@@ -164,7 +164,7 @@ export function registerMailCommands(cli: Goke) {
   // =========================================================================
 
   cli
-    .command('mail read [...threadIds]', 'Read full email threads')
+    .command('mail read [...threadIds]', 'Read full email threads (does not mark as read)')
     .option('--raw', 'Show raw message (first message only, single thread)')
     .option('--raw-html', 'Show raw HTML body per message (no markdown conversion)')
     .action(async (threadIds, options) => {
