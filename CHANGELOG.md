@@ -2,16 +2,57 @@
 
 ## 0.3.16
 
-**Mark threads as spam / remove from spam**
+1. **Richer `mail list` / `mail search` output** — threads now show recipient, snippet, labels, and attachment/reply flags alongside the existing from/subject/date:
 
-Two new mail action commands:
+   ```yaml
+   - id: 19ccf065cd1242d4
+     from: GitHub <noreply@github.com>
+     to: you@example.com
+     subject: "PR merged: fix timeout"
+     snippet: "Your pull request was merged into main..."
+     flags: [unread, attachment]
+     labels: [work]
+     date: 2026-03-19
+   ```
 
-```bash
-zele mail spam <thread-id>      # mark thread as spam (adds SPAM label, removes from inbox)
-zele mail unspam <thread-id>    # remove thread from spam (removes SPAM label, moves to inbox)
-```
+   `cc` and `unsubscribe` fields are included when present.
 
-Both accept multiple thread IDs like the other bulk actions (`star`, `archive`, etc.).
+2. **`mail read` accepts multiple thread IDs** — fetch several threads in one call:
+
+   ```bash
+   zele mail read 19ccf065 1a3b4c5d 1f2e3d4c
+   ```
+
+   Threads are fetched concurrently. Each gets a separator header (`Thread 2/3 · <id>`). Single-thread output is unchanged. `--raw` is restricted to one ID; `--raw-html` works per-thread.
+
+3. **`--filter` option for `mail list`** — pass Gmail search operators directly:
+
+   ```bash
+   zele mail list --filter "is:unread"
+   zele mail list --filter "has:attachment from:github"
+   zele mail list --filter "label:work newer_than:7d"
+   ```
+
+   Composes with existing `--folder` and `--label` options.
+
+4. **Mark threads as spam / remove from spam** — two new mail action commands:
+
+   ```bash
+   zele mail spam <thread-id>      # mark as spam (adds SPAM label, removes from inbox)
+   zele mail unspam <thread-id>    # remove from spam (removes SPAM label, moves to inbox)
+   ```
+
+   Both accept multiple thread IDs like the other bulk actions (`star`, `archive`, etc.).
+
+5. **`next_page` token shown in `mail list`, `mail search`, `draft list`** — pagination now works end-to-end:
+
+   ```bash
+   zele mail list --account you@example.com > page1.yaml
+   # grab next_page value from output, then:
+   zele mail list --account you@example.com --page <token>
+   ```
+
+6. **Fixed `--to` date-only resolving to start of day in `cal events`** — `--from 2026-03-12 --to 2026-03-12` now correctly matches events on that day. Previously both dates resolved to `00:00`, producing a zero-width range with no results.
 
 ## 0.3.15
 
