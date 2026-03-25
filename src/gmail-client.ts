@@ -22,6 +22,18 @@ import type { AccountId } from './auth.js'
 // Types
 // ---------------------------------------------------------------------------
 
+export type AuthVerdict = 'pass' | 'fail' | 'softfail' | 'neutral' | 'none' | 'temperror' | 'permerror' | 'bestguesspass'
+
+export interface AuthResult {
+  spf: AuthVerdict
+  dkim: AuthVerdict
+  dmarc: AuthVerdict
+  /** true when all three are 'pass' — the email is fully authenticated */
+  authentic: boolean
+  /** raw Authentication-Results header value */
+  raw: string
+}
+
 export interface Sender {
   name?: string
   email: string
@@ -50,6 +62,8 @@ export interface ParsedMessage {
   mimeType: string // 'text/plain' or 'text/html'
   textBody: string | null // decoded text/plain body when available (for reply parsing)
   attachments: AttachmentMeta[]
+  /** SPF/DKIM/DMARC authentication results from Gmail. null for sent/draft messages. */
+  auth: AuthResult | null
 }
 
 export interface AttachmentMeta {
@@ -1282,6 +1296,20 @@ export class GmailClient {
 
     const { body, mimeType, textBody } = this.extractBody(message.payload ?? {})
 
+    // Authentication-Results: multiple MTAs can add this header. Prefer the one
+    // stamped by Gmail's trusted authserv-id (mx.google.com) to avoid trusting
+    // headers injected by upstream/untrusted relays.
+    const authHeaders = headers
+      .filter((h) => h.name?.toLowerCase() === 'authentication-results')
+      .map((h) => h.value ?? '')
+      .filter((v) => v.length > 0)
+    const trustedAuthHeader =
+      authHeaders.find((v) => v.trim().toLowerCase().startsWith('mx.google.com'))
+      ?? authHeaders[0]
+      ?? null
+    const isSentOrDraft = labelIds.includes('SENT') || labelIds.includes('DRAFT')
+    const auth = trustedAuthHeader && !isSentOrDraft ? parseAuthResults(trustedAuthHeader) : null
+
     return {
       id: message.id ?? '',
       threadId: message.threadId ?? '',
@@ -1308,6 +1336,7 @@ export class GmailClient {
       mimeType,
       textBody,
       attachments: this.extractAttachmentMeta(message.payload?.parts ?? []),
+      auth,
     }
   }
 
@@ -2012,6 +2041,42 @@ export class GmailClient {
         .map((e) => e.trim())
         .filter(Boolean),
     )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Email authentication: parse the Authentication-Results header
+// ---------------------------------------------------------------------------
+// Gmail adds an Authentication-Results header to every received message with
+// SPF, DKIM, and DMARC verdicts. Format is semi-structured:
+//   Authentication-Results: mx.google.com;
+//       dkim=pass header.i=@example.com header.s=sel1;
+//       spf=pass (...) smtp.mailfrom=user@example.com;
+//       dmarc=pass (p=REJECT) header.from=example.com
+// We extract the verdict keyword after each protocol name.
+// ---------------------------------------------------------------------------
+
+const AUTH_VERDICTS = new Set(['pass', 'fail', 'softfail', 'neutral', 'none', 'temperror', 'permerror', 'bestguesspass'])
+
+/** Parse a Gmail Authentication-Results header into structured verdicts. */
+export function parseAuthResults(header: string): AuthResult {
+  const lower = header.toLowerCase()
+  const extract = (protocol: string): AuthVerdict => {
+    // Match "protocol=verdict" — verdict is a word that stops at whitespace, semicolons, or parens
+    const re = new RegExp(`\\b${protocol}\\s*=\\s*([a-z]+)`)
+    const match = re.exec(lower)
+    const verdict = match?.[1] ?? 'none'
+    return AUTH_VERDICTS.has(verdict) ? verdict as AuthVerdict : 'none'
+  }
+  const spf = extract('spf')
+  const dkim = extract('dkim')
+  const dmarc = extract('dmarc')
+  return {
+    spf,
+    dkim,
+    dmarc,
+    authentic: spf === 'pass' && dkim === 'pass' && dmarc === 'pass',
+    raw: header,
   }
 }
 

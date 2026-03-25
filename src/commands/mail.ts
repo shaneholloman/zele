@@ -220,6 +220,7 @@ export function registerMailCommands(cli: Goke) {
     .command('mail read [...threadIds]', 'Read full email threads (does not mark as read)')
     .option('--raw', 'Show raw message (first message only, single thread)')
     .option('--raw-html', 'Show raw HTML body per message (no markdown conversion)')
+    .option('--verify', 'Show expanded email authentication details (SPF/DKIM/DMARC)')
     .action(async (threadIds, options) => {
       if (threadIds.length === 0) {
         out.error('No thread IDs provided')
@@ -322,6 +323,24 @@ export function registerMailCommands(cli: Goke) {
             console.log(pc.dim(`  Cc: ${msg.cc.map((c) => c.email).join(', ')}`))
           }
           console.log(pc.dim(`Date: ${dateStr}`))
+
+          if (msg.auth) {
+            const check = (verdict: string) => {
+              return verdict === 'pass'
+                ? pc.green('✓')
+                : pc.red('✗')
+            }
+            const parts = [
+              `${check(msg.auth.spf)} SPF`,
+              `${check(msg.auth.dkim)} DKIM`,
+              `${check(msg.auth.dmarc)} DMARC`,
+            ]
+            const label = msg.auth.authentic ? pc.green('authentic') : pc.red('UNVERIFIED')
+            console.log(`Auth: ${parts.join('  ')}  (${label})`)
+            if (options.verify) {
+              console.log(pc.dim(`  Raw: ${msg.auth.raw}`))
+            }
+          }
 
           if (msg.attachments.length > 0) {
             const attList = msg.attachments.map((a) => {
