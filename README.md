@@ -9,7 +9,7 @@
 
 ## Install
 
-Multi-account Gmail and Google Calendar client with OAuth2 auth, SQLite cache, and YAML output.
+Multi-account email and calendar client supporting **Google OAuth** and **IMAP/SMTP** (Fastmail, Outlook, any provider). SQLite cache, YAML output.
 
 Requires [bun](https://bun.sh):
 
@@ -24,14 +24,53 @@ bun install -g zele
 
 ## Setup
 
+### Google accounts
+
 ```bash
 zele login
 ```
 
 Opens a browser for Google OAuth2. Repeat to add more accounts.
 
+### IMAP/SMTP accounts
+
+For non-Google providers (Fastmail, Outlook, Gmail with app passwords, any IMAP server):
+
 ```bash
-zele whoami         # show authenticated accounts
+# Fastmail
+zele login imap \
+  --email you@fastmail.com \
+  --imap-host imap.fastmail.com --imap-port 993 \
+  --smtp-host smtp.fastmail.com --smtp-port 465 \
+  --password "your-app-password"
+
+# Gmail (app password)
+zele login imap \
+  --email you@gmail.com \
+  --imap-host imap.gmail.com --imap-port 993 \
+  --smtp-host smtp.gmail.com --smtp-port 465 \
+  --password "your-app-password"
+
+# Outlook
+zele login imap \
+  --email you@outlook.com \
+  --imap-host outlook.office365.com --imap-port 993 \
+  --smtp-host smtp-mail.outlook.com --smtp-port 587 \
+  --password "your-password"
+
+# IMAP-only (no sending)
+zele login imap \
+  --email reader@example.com \
+  --imap-host imap.example.com --imap-port 993 \
+  --password "pass"
+```
+
+Use `--imap-user` / `--smtp-user` if the login username differs from your email. Omit `--smtp-host` for read-only access.
+
+### Account management
+
+```bash
+zele whoami         # show authenticated accounts (type, capabilities)
 zele logout         # remove credentials
 ```
 
@@ -68,43 +107,35 @@ zele mail trash-spam
 
 ### Search query syntax
 
-`mail search` and `mail watch --query` use [Gmail search operators](https://support.google.com/mail/answer/7190). `mail search` sends the query server-side (full Gmail support), while `mail watch --query` evaluates a subset client-side.
+For **Google accounts**, `mail search` and `mail list --filter` use [Gmail search operators](https://support.google.com/mail/answer/7190) server-side. For **IMAP accounts**, queries are translated to IMAP SEARCH criteria (a subset is supported).
 
-| Operator | Example | Description |
-|---|---|---|
-| `from:` | `from:github` | Messages from a sender |
-| `to:` | `to:me@example.com` | Messages sent to a recipient |
-| `cc:` | `cc:team@example.com` | Messages where recipient was CC'd |
-| `subject:` | `subject:invoice` | Messages with words in the subject |
-| `is:unread` | `is:unread` | Unread messages |
-| `is:read` | `is:read` | Read messages |
-| `is:starred` | `is:starred` | Starred messages |
-| `has:attachment` | `has:attachment` | Messages with attachments (heuristic in watch) |
-| `-` (negate) | `-from:noreply` | Exclude matching messages |
-| `" "` (quotes) | `"exact phrase"` | Match an exact phrase |
-| `label:` | `label:work` | Messages with a specific label (search only) |
-| `in:` | `in:sent` | Messages in a folder (search only) |
-| `after:` | `after:2024/01/01` | Messages after a date (search only) |
-| `before:` | `before:2024/12/31` | Messages before a date (search only) |
-| `newer_than:` | `newer_than:7d` | Messages newer than a period (search only) |
-| `older_than:` | `older_than:1m` | Messages older than a period (search only) |
-| `filename:` | `filename:pdf` | Attachment filename (search only) |
-| `size:` / `larger:` / `smaller:` | `larger:5M` | Filter by message size (search only) |
-| `OR` | `from:a OR from:b` | Match either term (search only) |
-| `{ }` | `{from:a from:b}` | Group OR terms (search only) |
-
-Combine multiple operators to narrow results:
+| Operator | Example | Google | IMAP |
+|---|---|---|---|
+| `from:` | `from:github` | yes | yes |
+| `to:` | `to:me@example.com` | yes | yes |
+| `subject:` | `subject:invoice` | yes | yes |
+| `is:unread` | `is:unread` | yes | yes |
+| `is:starred` | `is:starred` | yes | yes |
+| `has:attachment` | `has:attachment` | yes | yes |
+| `newer_than:` | `newer_than:7d` | yes | yes |
+| `older_than:` | `older_than:1m` | yes | yes |
+| `after:` | `after:2024/01/01` | yes | yes |
+| `before:` | `before:2024/12/31` | yes | yes |
+| `cc:` | `cc:team@example.com` | yes | no |
+| `-` (negate) | `-from:noreply` | yes | no |
+| `" "` (quotes) | `"exact phrase"` | yes | no |
+| `label:` | `label:work` | yes | no |
+| `in:` | `in:sent` | yes | no |
+| `filename:` | `filename:pdf` | yes | no |
+| `size:` / `larger:` / `smaller:` | `larger:5M` | yes | no |
+| `OR` / `{ }` | `from:a OR from:b` | yes | no |
 
 ```bash
 zele mail list --filter "is:unread"
-zele mail list --filter "from:github has:attachment" --folder sent
+zele mail list --filter "from:github newer_than:7d" --folder sent
 zele mail search "from:github is:unread newer_than:7d"
 zele mail watch --query "from:github has:attachment"
 ```
-
-`mail list --filter` accepts the same Gmail search operators as `mail search`, and combines with `--folder` and `--label`.
-
-Operators marked **(search only)** are handled server-side by Gmail and only available in `mail search`. Using them in `mail watch --query` prints a warning and skips the operator.
 
 ### Drafts
 
@@ -115,7 +146,7 @@ zele draft send <draft-id>
 zele draft delete <draft-id>
 ```
 
-### Labels
+### Labels (Google only)
 
 ```bash
 zele label list
@@ -124,7 +155,13 @@ zele label create <name>
 zele label delete <label-id>
 ```
 
-### Calendar
+### Filters (Google only)
+
+```bash
+zele mail filter list
+```
+
+### Calendar (Google only)
 
 ```bash
 zele cal list                     # list calendars
@@ -171,6 +208,24 @@ zele profile                      # show account info
 ## Multi-account
 
 All commands support `--account <email>` to filter by account. Without it, commands fetch from all accounts and merge results.
+
+Google and IMAP/SMTP accounts work side by side — `mail list` merges results from both. Google-only features (labels, filters, calendar) show a helpful error when used with IMAP accounts.
+
+### Feature compatibility
+
+| Feature | Google | IMAP/SMTP |
+|---|---|---|
+| List, read, search emails | yes | yes |
+| Send, reply, forward | yes | yes (requires SMTP) |
+| Star, archive, trash, mark read | yes | yes |
+| Drafts | yes | yes |
+| Attachments | yes | yes |
+| Watch for new emails | yes | yes |
+| Date/sender/subject filters | yes | yes |
+| Labels | yes | no (IMAP uses folders) |
+| Filters | yes | no |
+| Calendar | yes | no |
+| Gmail search operators | full | subset (see table above) |
 
 ## Output
 
