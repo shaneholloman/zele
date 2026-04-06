@@ -5,6 +5,7 @@ import type { Goke } from 'goke'
 import { z } from 'zod'
 import { getClient } from '../auth.js'
 import type { GmailClient } from '../gmail-client.js'
+import type { ImapSmtpClient } from '../imap-smtp-client.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
 
@@ -16,7 +17,7 @@ async function bulkAction(
   threadIds: string[],
   actionName: string,
   accountFilter: string[] | undefined,
-  fn: (client: GmailClient, ids: string[]) => Promise<void | Error>,
+  fn: (client: GmailClient | ImapSmtpClient, ids: string[]) => Promise<void | Error>,
 ) {
   if (threadIds.length === 0) {
     out.error('No thread IDs provided')

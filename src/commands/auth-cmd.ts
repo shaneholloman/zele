@@ -1,21 +1,126 @@
-// Auth commands: login, logout, whoami.
-// Manages OAuth2 authentication for zele.
+// Auth commands: login, login imap, logout, whoami.
+// Manages authentication for zele (Google OAuth and IMAP/SMTP credentials).
 // Supports multiple accounts: login adds accounts, logout removes one.
 
 import type { Goke } from 'goke'
-import { login, logout, listAccounts, getAuthStatuses } from '../auth.js'
+import { z } from 'zod'
+import pc from 'picocolors'
+import { login, loginImap, logout, listAccounts, getAuthStatuses } from '../auth.js'
 import { closePrisma } from '../db.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
 
 export function registerAuthCommands(cli: Goke) {
   cli
-    .command('login', 'Authenticate with Google (opens browser). For headless/agent environments, run inside tmux: the command prints an authorization URL to open in a browser, then waits for the localhost redirect URL to be pasted back.')
+    .command('login', 'Authenticate with Google (opens browser) or show IMAP/SMTP login instructions')
     .action(async () => {
+      // In a TTY, ask if they want Google or Other
+      if (process.stdin.isTTY) {
+        const readline = await import('node:readline')
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+
+        console.error(pc.bold('\nChoose authentication method:\n'))
+        console.error('  ' + pc.cyan('1') + ' Google (opens browser for OAuth)')
+        console.error('  ' + pc.cyan('2') + ' Other (IMAP/SMTP with password)\n')
+
+        const answer = await new Promise<string>((resolve) => {
+          rl.question('Enter choice [1]: ', resolve)
+        })
+        rl.close()
+
+        const choice = answer.trim() || '1'
+
+        if (choice === '2') {
+          console.error(pc.bold('\nTo add an IMAP/SMTP account, run:\n'))
+          console.error(pc.dim('  # Fastmail'))
+          console.error(`  zele login imap \\`)
+          console.error(`    --email you@fastmail.com \\`)
+          console.error(`    --imap-host imap.fastmail.com --imap-port 993 \\`)
+          console.error(`    --smtp-host smtp.fastmail.com --smtp-port 465 \\`)
+          console.error(`    --password "your-app-password"`)
+          console.error()
+          console.error(pc.dim('  # Gmail (app password)'))
+          console.error(`  zele login imap \\`)
+          console.error(`    --email you@gmail.com \\`)
+          console.error(`    --imap-host imap.gmail.com --imap-port 993 \\`)
+          console.error(`    --smtp-host smtp.gmail.com --smtp-port 465 \\`)
+          console.error(`    --password "your-app-password"`)
+          console.error()
+          console.error(pc.dim('  # Outlook/Hotmail'))
+          console.error(`  zele login imap \\`)
+          console.error(`    --email you@outlook.com \\`)
+          console.error(`    --imap-host outlook.office365.com --imap-port 993 \\`)
+          console.error(`    --smtp-host smtp-mail.outlook.com --smtp-port 587 \\`)
+          console.error(`    --password "your-password"`)
+          console.error()
+          console.error(pc.dim('  # Generic (any IMAP/SMTP provider)'))
+          console.error(`  zele login imap \\`)
+          console.error(`    --email you@example.com \\`)
+          console.error(`    --imap-host imap.example.com --imap-port 993 \\`)
+          console.error(`    --smtp-host smtp.example.com --smtp-port 465 \\`)
+          console.error(`    --password "your-password"`)
+          console.error()
+          console.error(pc.dim('Omit --smtp-host for read-only (IMAP only, no sending).'))
+          console.error(pc.dim('Use --imap-user/--smtp-user if the login username differs from your email.'))
+          return
+        }
+      }
+
+      // Default: Google OAuth flow
       const result = await login()
       if (result instanceof Error) handleCommandError(result)
       const { email } = result
       out.success(`Authenticated as ${email}`)
+      await closePrisma()
+      process.exit(0)
+    })
+
+  cli
+    .command('login imap', 'Add an IMAP/SMTP email account (non-interactive, designed for agents)')
+    .option('--email <email>', z.string().describe('Email address'))
+    .option('--imap-host <imapHost>', z.string().describe('IMAP server hostname'))
+    .option('--imap-port <imapPort>', z.string().describe('IMAP server port (default: 993)'))
+    .option('--smtp-host <smtpHost>', z.string().describe('SMTP server hostname (optional, enables sending)'))
+    .option('--smtp-port <smtpPort>', z.string().describe('SMTP server port (default: 465)'))
+    .option('--password <password>', z.string().describe('Password (shared for IMAP and SMTP unless overridden)'))
+    .option('--imap-user <imapUser>', z.string().describe('IMAP username (defaults to --email)'))
+    .option('--imap-password <imapPassword>', z.string().describe('IMAP password (overrides --password)'))
+    .option('--smtp-user <smtpUser>', z.string().describe('SMTP username (defaults to --email)'))
+    .option('--smtp-password <smtpPassword>', z.string().describe('SMTP password (overrides --password)'))
+    .option('--no-tls', 'Disable TLS (not recommended)')
+    .action(async (options) => {
+      if (!options.email) {
+        out.error('--email is required')
+        process.exit(1)
+      }
+      if (!options.imapHost) {
+        out.error('--imap-host is required')
+        process.exit(1)
+      }
+      if (!options.password && !options.imapPassword) {
+        out.error('--password or --imap-password is required')
+        process.exit(1)
+      }
+
+      out.hint('Testing IMAP connection...')
+
+      const result = await loginImap({
+        email: options.email,
+        imapHost: options.imapHost,
+        imapPort: options.imapPort ? Number(options.imapPort) : undefined,
+        smtpHost: options.smtpHost,
+        smtpPort: options.smtpPort ? Number(options.smtpPort) : undefined,
+        password: options.password,
+        imapUser: options.imapUser,
+        imapPassword: options.imapPassword,
+        smtpUser: options.smtpUser,
+        smtpPassword: options.smtpPassword,
+        tls: options.noTls !== true,
+      })
+      if (result instanceof Error) handleCommandError(result)
+
+      const caps = options.smtpHost ? 'IMAP + SMTP' : 'IMAP only'
+      out.success(`Authenticated ${result.email} (${caps})`)
       await closePrisma()
       process.exit(0)
     })
@@ -88,9 +193,10 @@ export function registerAuthCommands(cli: Goke) {
       out.printList(
         statuses.map((s) => ({
           email: s.email,
-          app_id: s.appId,
+          type: s.accountType,
+          capabilities: s.capabilities.join(', '),
           status: 'Authenticated',
-          expires: s.expiresAt?.toISOString() ?? 'unknown',
+          ...(s.expiresAt ? { expires: s.expiresAt.toISOString() } : {}),
         })),
         { summary: `${statuses.length} account(s)` },
       )

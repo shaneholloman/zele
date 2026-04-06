@@ -16,7 +16,51 @@ import { getPrisma } from './db.js'
 import { GmailClient } from './gmail-client.js'
 import { CalendarClient } from './calendar-client.js'
 import * as errore from 'errore'
-import { AuthError } from './api-utils.js'
+import { AuthError, ApiError, UnsupportedError } from './api-utils.js'
+import { ImapSmtpClient } from './imap-smtp-client.js'
+
+// ---------------------------------------------------------------------------
+// Account types
+// ---------------------------------------------------------------------------
+
+export type AccountType = 'google' | 'imap_smtp'
+
+export const IMAP_SMTP_APP_ID = 'imap_smtp' as const
+
+export interface ImapCredentials {
+  host: string
+  port: number
+  user: string
+  password: string
+  tls: boolean
+}
+
+export interface SmtpCredentials {
+  host: string
+  port: number
+  user: string
+  password: string
+  tls: boolean
+}
+
+/** Stored in the `tokens` column for imap_smtp accounts. */
+export interface ImapSmtpCredentials {
+  imap?: ImapCredentials
+  smtp?: SmtpCredentials
+}
+
+/** Capabilities an account can have. */
+export type AccountCapability = 'gmail' | 'calendar' | 'smtp' | 'imap'
+
+export function parseCapabilities(raw: string): AccountCapability[] {
+  if (!raw) return []
+  return raw.split(',').map((s) => s.trim()).filter(Boolean) as AccountCapability[]
+}
+
+export function hasCapability(capabilities: string | AccountCapability[], cap: AccountCapability): boolean {
+  const list = typeof capabilities === 'string' ? parseCapabilities(capabilities) : capabilities
+  return list.includes(cap)
+}
 
 // ---------------------------------------------------------------------------
 // Known open-source Google OAuth clients (Desktop app type).
@@ -123,6 +167,8 @@ export function createOAuth2Client(appId?: string): OAuth2Client {
 export interface AccountId {
   email: string
   appId: string
+  accountType: AccountType
+  capabilities: AccountCapability[]
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +576,7 @@ export async function login(
 
   // Upsert account in DB
   const prisma = await getPrisma()
+  const googleCapabilities = 'gmail,calendar,smtp'
   const upsertResult = await errore.tryAsync({
     try: () =>
       prisma.account.upsert({
@@ -537,18 +584,157 @@ export async function login(
         create: {
           email,
           appId: resolved.clientId,
+          accountType: 'google',
+          capabilities: googleCapabilities,
           accountStatus: 'active',
           tokens: JSON.stringify(tokens),
           createdAt: new Date(),
           updatedAt: new Date(),
         },
-        update: { tokens: JSON.stringify(tokens), updatedAt: new Date() },
+        update: { tokens: JSON.stringify(tokens), capabilities: googleCapabilities, updatedAt: new Date() },
       }),
     catch: (err) => new Error(`Failed to save account ${email}`, { cause: err }),
   })
   if (upsertResult instanceof Error) return upsertResult
 
   return { email, appId: resolved.clientId, client }
+}
+
+// ---------------------------------------------------------------------------
+// Login: IMAP/SMTP credentials → save to DB
+// ---------------------------------------------------------------------------
+
+export interface LoginImapOptions {
+  email: string
+  imapHost: string
+  imapPort?: number
+  smtpHost?: string
+  smtpPort?: number
+  password?: string
+  imapUser?: string
+  imapPassword?: string
+  smtpUser?: string
+  smtpPassword?: string
+  tls?: boolean
+}
+
+/**
+ * Login with IMAP/SMTP credentials. Tests connections before saving.
+ * Returns an error value if validation or connection test fails.
+ */
+export async function loginImap(
+  options: LoginImapOptions,
+): Promise<{ email: string; appId: string } | Error> {
+  const {
+    email,
+    imapHost,
+    imapPort = 993,
+    smtpHost,
+    smtpPort = 465,
+    password,
+    imapUser,
+    imapPassword,
+    smtpUser,
+    smtpPassword,
+    tls = true,
+  } = options
+
+  const imapPass = imapPassword ?? password
+  if (!imapPass) {
+    return new Error('IMAP password is required (--password or --imap-password)')
+  }
+
+  const credentials: ImapSmtpCredentials = {
+    imap: {
+      host: imapHost,
+      port: imapPort,
+      user: imapUser ?? email,
+      password: imapPass,
+      tls,
+    },
+  }
+
+  // Test IMAP connection
+  const { ImapFlow } = await import('imapflow')
+  const testClient = new ImapFlow({
+    host: imapHost,
+    port: imapPort,
+    secure: tls,
+    auth: { user: imapUser ?? email, pass: imapPass },
+    logger: false,
+  })
+
+  const imapTest = await errore.tryAsync({
+    try: async () => {
+      await testClient.connect()
+      await testClient.logout()
+    },
+    catch: (err) => new AuthError({ email, reason: `IMAP connection failed: ${String(err)}` }),
+  })
+  if (imapTest instanceof Error) return imapTest
+
+  // Configure SMTP if provided
+  const capabilities: AccountCapability[] = ['imap']
+
+  if (smtpHost) {
+    const smtpPass = smtpPassword ?? password
+    if (!smtpPass) {
+      return new Error('SMTP password is required when --smtp-host is provided (--password or --smtp-password)')
+    }
+
+    credentials.smtp = {
+      host: smtpHost,
+      port: smtpPort,
+      user: smtpUser ?? email,
+      password: smtpPass,
+      tls: smtpPort === 465,
+    }
+
+    // Test SMTP connection
+    const nodemailer = await import('nodemailer')
+    const transporter = nodemailer.default.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: { user: smtpUser ?? email, pass: smtpPass },
+    })
+
+    const smtpTest = await errore.tryAsync({
+      try: () => transporter.verify(),
+      catch: (err) => new AuthError({ email, reason: `SMTP connection failed: ${String(err)}` }),
+    })
+    if (smtpTest instanceof Error) return smtpTest
+
+    capabilities.push('smtp')
+  }
+
+  // Save to DB
+  const prisma = await getPrisma()
+  const upsertResult = await errore.tryAsync({
+    try: () =>
+      prisma.account.upsert({
+        where: { email_appId: { email, appId: IMAP_SMTP_APP_ID } },
+        create: {
+          email,
+          appId: IMAP_SMTP_APP_ID,
+          accountType: 'imap_smtp',
+          capabilities: capabilities.join(','),
+          accountStatus: 'active',
+          tokens: JSON.stringify(credentials),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        update: {
+          capabilities: capabilities.join(','),
+          tokens: JSON.stringify(credentials),
+          updatedAt: new Date(),
+        },
+      }),
+    catch: (err) => new Error(`Failed to save account ${email}`, { cause: err }),
+  })
+  if (upsertResult instanceof Error) return upsertResult
+
+  return { email, appId: IMAP_SMTP_APP_ID }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,8 +757,13 @@ export async function logout(email: string): Promise<void | Error> {
 
 export async function listAccounts(): Promise<AccountId[]> {
   const prisma = await getPrisma()
-  const rows = await prisma.account.findMany({ select: { email: true, appId: true } })
-  return rows.map((r) => ({ email: r.email, appId: r.appId }))
+  const rows = await prisma.account.findMany({ select: { email: true, appId: true, accountType: true, capabilities: true } })
+  return rows.map((r) => ({
+    email: r.email,
+    appId: r.appId,
+    accountType: r.accountType as AccountType,
+    capabilities: parseCapabilities(r.capabilities),
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -613,13 +804,23 @@ async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
   return oauth2Client
 }
 
+/** Entry returned by getClients — client is GmailClient for Google accounts, ImapSmtpClient for IMAP/SMTP. */
+export interface ClientEntry {
+  email: string
+  appId: string
+  accountType: AccountType
+  capabilities: AccountCapability[]
+  client: GmailClient | ImapSmtpClient
+}
+
 /**
- * Get authenticated GmailClient instances for all accounts (or filtered by email list).
+ * Get authenticated client instances for all accounts (or filtered by email list).
+ * Returns GmailClient for Google accounts and ImapSmtpClient for IMAP/SMTP accounts.
  * If no accounts are registered, throws with a helpful message.
  */
 export async function getClients(
   accounts?: string[],
-): Promise<Array<{ email: string; appId: string; client: GmailClient }>> {
+): Promise<ClientEntry[]> {
   const allAccounts = await listAccounts()
   if (allAccounts.length === 0) {
     throw new Error('No accounts registered. Run: zele login')
@@ -634,10 +835,33 @@ export async function getClients(
     throw new Error(`No matching accounts. Available: ${available}`)
   }
 
+  const prisma = await getPrisma()
   const results = await Promise.all(
-    filtered.map(async (account) => {
+    filtered.map(async (account): Promise<ClientEntry> => {
+      if (account.accountType === 'imap_smtp') {
+        const row = await prisma.account.findUnique({
+          where: { email_appId: { email: account.email, appId: account.appId } },
+        })
+        if (!row) throw new Error(`No account found for ${account.email}. Run: zele login`)
+        const credentials: ImapSmtpCredentials = JSON.parse(row.tokens)
+        return {
+          email: account.email,
+          appId: account.appId,
+          accountType: 'imap_smtp',
+          capabilities: account.capabilities,
+          client: new ImapSmtpClient({ credentials, account }),
+        }
+      }
+
+      // Google account
       const auth = await authenticateAccount(account)
-      return { email: account.email, appId: account.appId, client: new GmailClient({ auth, account }) }
+      return {
+        email: account.email,
+        appId: account.appId,
+        accountType: 'google',
+        capabilities: account.capabilities,
+        client: new GmailClient({ auth, account }),
+      }
     }),
   )
 
@@ -645,12 +869,12 @@ export async function getClients(
 }
 
 /**
- * Get a single authenticated GmailClient. Errors if multiple accounts exist
+ * Get a single authenticated client. Errors if multiple accounts exist
  * and no --account filter was provided.
  */
 export async function getClient(
   accounts?: string[],
-): Promise<{ email: string; appId: string; client: GmailClient }> {
+): Promise<ClientEntry> {
   const clients = await getClients(accounts)
   if (clients.length === 1) {
     return clients[0]!
@@ -662,12 +886,31 @@ export async function getClient(
   )
 }
 
+/**
+ * Get a single authenticated GmailClient. Errors if account is not a Google account.
+ * Use this for commands that require Gmail-specific features.
+ */
+export async function getGmailClient(
+  accounts?: string[],
+): Promise<{ email: string; appId: string; client: GmailClient }> {
+  const entry = await getClient(accounts)
+  if (entry.accountType !== 'google') {
+    throw new UnsupportedError({
+      feature: 'This command',
+      accountType: 'IMAP/SMTP',
+      hint: 'It requires a Google account.',
+    })
+  }
+  return { email: entry.email, appId: entry.appId, client: entry.client as GmailClient }
+}
+
 // ---------------------------------------------------------------------------
 // Calendar client helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Get authenticated CalendarClient instances for all accounts (or filtered by email list).
+ * Get authenticated CalendarClient instances for Google accounts only.
+ * IMAP/SMTP accounts are silently skipped (calendar requires Google OAuth).
  */
 export async function getCalendarClients(
   accounts?: string[],
@@ -686,8 +929,18 @@ export async function getCalendarClients(
     throw new Error(`No matching accounts. Available: ${available}`)
   }
 
+  // Only Google accounts support calendar
+  const googleAccounts = filtered.filter((a) => a.accountType === 'google')
+  if (googleAccounts.length === 0) {
+    throw new UnsupportedError({
+      feature: 'Calendar',
+      accountType: 'IMAP/SMTP',
+      hint: 'Calendar requires a Google account.',
+    })
+  }
+
   const results = await Promise.all(
-    filtered.map(async (account) => {
+    googleAccounts.map(async (account) => {
       const auth = await authenticateAccount(account)
       const { token } = await auth.getAccessToken()
       if (!token) throw new Error(`Failed to get access token for ${account.email}`)
@@ -723,6 +976,8 @@ export async function getCalendarClient(
 export interface AuthStatus {
   email: string
   appId: string
+  accountType: AccountType
+  capabilities: AccountCapability[]
   expiresAt?: Date
 }
 
@@ -731,11 +986,24 @@ export async function getAuthStatuses(): Promise<AuthStatus[]> {
   const rows = await prisma.account.findMany()
 
   return rows.map((row) => {
-    const tokens: Credentials = JSON.parse(row.tokens)
+    const accountType = row.accountType as AccountType
+    const capabilities = parseCapabilities(row.capabilities)
+    if (accountType === 'google') {
+      const tokens: Credentials = JSON.parse(row.tokens)
+      return {
+        email: row.email,
+        appId: row.appId,
+        accountType,
+        capabilities,
+        expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
+      }
+    }
+    // IMAP/SMTP — no expiry
     return {
       email: row.email,
       appId: row.appId,
-      expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
+      accountType,
+      capabilities,
     }
   })
 }

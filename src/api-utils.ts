@@ -120,6 +120,12 @@ export class ApiError extends errore.createTaggedError({
   message: 'API call failed: $reason',
 }) {}
 
+/** Returned when a command requires a capability (e.g. gmail labels) that the account doesn't support. */
+export class UnsupportedError extends errore.createTaggedError({
+  name: 'UnsupportedError',
+  message: '$feature is not available for $accountType accounts. $hint',
+}) {}
+
 /** Detect auth-like errors from underlying libraries (tsdav string errors, googleapis structured errors).
  *  Used inside clients to decide whether to return an AuthError.
  *  NOTE: String matching here is intentional — this is the boundary layer that converts

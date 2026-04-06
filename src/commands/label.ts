@@ -5,9 +5,11 @@
 
 import type { Goke } from 'goke'
 import { z } from 'zod'
-import { getClients, getClient } from '../auth.js'
-import { AuthError } from '../api-utils.js'
+import { getClients, getGmailClient } from '../auth.js'
+import { AuthError, UnsupportedError } from '../api-utils.js'
+import type { GmailClient } from '../gmail-client.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 
 export function registerLabelCommands(cli: Goke) {
   // =========================================================================
@@ -18,11 +20,16 @@ export function registerLabelCommands(cli: Goke) {
     .command('label list', 'List all labels')
     .action(async (options) => {
       const clients = await getClients(options.account)
+      // Labels are Google-only — filter to Google accounts
+      const googleClients = clients.filter((c) => c.accountType === 'google')
+      if (googleClients.length === 0) {
+        handleCommandError(new UnsupportedError({ feature: 'Labels', accountType: 'IMAP/SMTP', hint: 'IMAP accounts use folders. Use --folder to browse different mailboxes.' }))
+      }
 
-      // Fetch from all accounts concurrently
+      // Fetch from all Google accounts concurrently
       const results = await Promise.all(
-        clients.map(async ({ email, client }) => {
-          const labelsResult = await client.listLabels()
+        googleClients.map(async ({ email, client }) => {
+          const labelsResult = await (client as GmailClient).listLabels()
           if (labelsResult instanceof Error) return labelsResult
           return { email, labels: labelsResult.parsed }
         }),
@@ -69,7 +76,7 @@ export function registerLabelCommands(cli: Goke) {
   cli
     .command('label get <labelId>', 'Get label details with counts')
     .action(async (labelId, options) => {
-      const { client } = await getClient(options.account)
+      const { client } = await getGmailClient(options.account)
 
       const label = await client.getLabel({ labelId })
 
@@ -93,7 +100,7 @@ export function registerLabelCommands(cli: Goke) {
     .option('--bg-color <bgColor>', z.string().describe('Background color (hex, e.g. #4986e7)'))
     .option('--text-color <textColor>', z.string().describe('Text color (hex, e.g. #ffffff)'))
     .action(async (name, options) => {
-      const { client } = await getClient(options.account)
+      const { client } = await getGmailClient(options.account)
 
       const result = await client.createLabel({
         name,
@@ -128,7 +135,7 @@ export function registerLabelCommands(cli: Goke) {
         }
       }
 
-      const { client } = await getClient(options.account)
+      const { client } = await getGmailClient(options.account)
       await client.deleteLabel({ labelId })
 
       out.printYaml({ label_id: labelId, deleted: true })
@@ -142,11 +149,15 @@ export function registerLabelCommands(cli: Goke) {
     .command('label counts', 'Show unread counts per label')
     .action(async (options) => {
       const clients = await getClients(options.account)
+      const googleClients = clients.filter((c) => c.accountType === 'google')
+      if (googleClients.length === 0) {
+        handleCommandError(new UnsupportedError({ feature: 'Label counts', accountType: 'IMAP/SMTP', hint: 'IMAP accounts use folders, not labels.' }))
+      }
 
-      // Fetch from all accounts concurrently
+      // Fetch from all Google accounts concurrently
       const results = await Promise.all(
-        clients.map(async ({ email, client }) => {
-          const countsResult = await client.getLabelCounts()
+        googleClients.map(async ({ email, client }) => {
+          const countsResult = await (client as GmailClient).getLabelCounts()
           if (countsResult instanceof Error) return countsResult
           return { email, counts: countsResult.parsed }
         }),

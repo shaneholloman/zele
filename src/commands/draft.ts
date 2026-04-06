@@ -8,6 +8,7 @@ import { z } from 'zod'
 import fs from 'node:fs'
 import { getClients, getClient } from '../auth.js'
 import type { GmailClient } from '../gmail-client.js'
+import type { ImapSmtpClient } from '../imap-smtp-client.js'
 import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
@@ -154,6 +155,7 @@ export function registerDraftCommands(cli: Goke) {
         threadId: options.thread,
         fromEmail: options.from,
       })
+      if (result instanceof Error) handleCommandError(result)
 
       out.printYaml(result)
       out.success('Draft created')
@@ -168,6 +170,7 @@ export function registerDraftCommands(cli: Goke) {
     .action(async (draftId, options) => {
       const { client } = await getClient(options.account)
       const result = await client.sendDraft({ draftId })
+      if (result instanceof Error) handleCommandError(result)
 
       out.printYaml(result)
       out.success('Draft sent')
@@ -197,7 +200,8 @@ export function registerDraftCommands(cli: Goke) {
 
       const { client } = await getClient(options.account)
 
-      await client.deleteDraft({ draftId })
+      const deleteResult = await client.deleteDraft({ draftId })
+      if (deleteResult instanceof Error) handleCommandError(deleteResult)
 
       out.printYaml({ draft_id: draftId, deleted: true })
     })

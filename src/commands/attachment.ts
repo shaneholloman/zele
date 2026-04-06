@@ -86,6 +86,7 @@ export function registerAttachmentCommands(cli: Goke) {
 
       // Download
       const base64Data = await client.getAttachment({ messageId, attachmentId })
+      if (base64Data instanceof Error) return handleCommandError(base64Data)
       const buffer = Buffer.from(base64Data, 'base64')
 
       // Ensure output directory exists

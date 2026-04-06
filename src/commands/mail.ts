@@ -11,6 +11,7 @@ import React from 'react'
 import { lookup as mimeLookup } from 'mrmime'
 import { getClients, getClient, listAccounts, login } from '../auth.js'
 import type { ThreadListResult } from '../gmail-client.js'
+import type { GmailClient } from '../gmail-client.js'
 import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
@@ -66,19 +67,24 @@ export function registerMailCommands(cli: Goke) {
 
       // Fetch threads and labels from all accounts concurrently
       const results = await Promise.all(
-        clients.map(async ({ email, client }) => {
-          const [result, labelsResult] = await Promise.all([
-            client.listThreads({
-              folder,
-              maxResults: max,
-              labelIds: options.label ? [options.label] : undefined,
-              pageToken: options.page,
-              query: options.filter,
-            }),
-            client.listLabels(),
-          ])
+        clients.map(async ({ email, client, accountType }) => {
+          const result = await client.listThreads({
+            folder,
+            maxResults: max,
+            labelIds: options.label ? [options.label] : undefined,
+            pageToken: options.page,
+            query: options.filter,
+          })
           if (result instanceof Error) return result
-          const labelMap = labelsResult instanceof Error ? new Map<string, string>() : new Map(labelsResult.parsed.map((l) => [l.id, l.name]))
+
+          // Labels are Google-only — skip for IMAP accounts
+          let labelMap = new Map<string, string>()
+          if (accountType === 'google') {
+            const labelsResult = await (client as GmailClient).listLabels()
+            if (!(labelsResult instanceof Error)) {
+              labelMap = new Map(labelsResult.parsed.map((l) => [l.id, l.name]))
+            }
+          }
           return { email, result, labelMap }
         }),
       )
@@ -150,17 +156,21 @@ export function registerMailCommands(cli: Goke) {
 
       // Search all accounts concurrently (fetch labels alongside for name resolution)
       const results = await Promise.all(
-        clients.map(async ({ email, client }) => {
-          const [result, labelsResult] = await Promise.all([
-            client.listThreads({
-              query,
-              maxResults: max,
-              pageToken: options.page,
-            }),
-            client.listLabels(),
-          ])
+        clients.map(async ({ email, client, accountType }) => {
+          const result = await client.listThreads({
+            query,
+            maxResults: max,
+            pageToken: options.page,
+          })
           if (result instanceof Error) return result
-          const labelMap = labelsResult instanceof Error ? new Map<string, string>() : new Map(labelsResult.parsed.map((l) => [l.id, l.name]))
+
+          let labelMap = new Map<string, string>()
+          if (accountType === 'google') {
+            const labelsResult = await (client as GmailClient).listLabels()
+            if (!(labelsResult instanceof Error)) {
+              labelMap = new Map(labelsResult.parsed.map((l) => [l.id, l.name]))
+            }
+          }
           return { email, result, labelMap }
         }),
       )
@@ -433,6 +443,7 @@ export function registerMailCommands(cli: Goke) {
         fromEmail: options.from,
         attachments,
       })
+      if (result instanceof Error) handleCommandError(result)
 
       out.printYaml(result)
       out.success(`Sent to ${options.to}`)

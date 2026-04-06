@@ -3,8 +3,10 @@
 
 import type { Goke } from 'goke'
 import { getClients } from '../auth.js'
-import { AuthError, isScopeError } from '../api-utils.js'
+import { AuthError, UnsupportedError, isScopeError } from '../api-utils.js'
+import type { GmailClient } from '../gmail-client.js'
 import * as out from '../output.js'
+import { handleCommandError } from '../output.js'
 
 export function registerFilterCommands(cli: Goke) {
   // =========================================================================
@@ -15,10 +17,14 @@ export function registerFilterCommands(cli: Goke) {
     .command('mail filter list', 'List all Gmail filters')
     .action(async (options) => {
       const clients = await getClients(options.account)
+      const googleClients = clients.filter((c) => c.accountType === 'google')
+      if (googleClients.length === 0) {
+        handleCommandError(new UnsupportedError({ feature: 'Filters', accountType: 'IMAP/SMTP', hint: 'Filters are a Gmail-specific feature.' }))
+      }
 
       const results = await Promise.all(
-        clients.map(async ({ email, client }) => {
-          const res = await client.listFilters()
+        googleClients.map(async ({ email, client }) => {
+          const res = await (client as GmailClient).listFilters()
           if (res instanceof Error) return res
           return { email, filters: res.parsed }
         }),

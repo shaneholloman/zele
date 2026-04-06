@@ -5,24 +5,30 @@
 
 import type { Goke } from 'goke'
 import { getClients } from '../auth.js'
+import type { GmailClient } from '../gmail-client.js'
 import { AuthError } from '../api-utils.js'
 import * as out from '../output.js'
 
 export function registerProfileCommands(cli: Goke) {
   cli
-    .command('profile', 'Show Gmail account info')
+    .command('profile', 'Show account info')
     .action(async (options) => {
       const clients = await getClients(options.account)
 
       // Fetch all accounts concurrently
       const allResults = await Promise.all(
-        clients.map(async ({ client }) => {
+        clients.map(async ({ client, accountType }) => {
           const profile = await client.getProfile()
           if (profile instanceof Error) return profile
-          // Always fetch aliases fresh
-          const aliases = await client.getEmailAliases()
-          if (aliases instanceof Error) return aliases
-          return { profile, aliases }
+
+          if (accountType === 'google') {
+            // Google accounts have aliases
+            const aliases = await (client as GmailClient).getEmailAliases()
+            if (aliases instanceof Error) return aliases
+            return { profile, aliases, accountType }
+          }
+
+          return { profile, aliases: [{ email: profile.emailAddress, primary: true }], accountType }
         }),
       )
 
@@ -32,18 +38,22 @@ export function registerProfileCommands(cli: Goke) {
           return true
         })
 
-      for (const { profile, aliases } of results) {
-        out.printYaml({
+      for (const { profile, aliases, accountType } of results) {
+        const data: Record<string, unknown> = {
           email: profile.emailAddress,
-          messages_total: profile.messagesTotal,
-          threads_total: profile.threadsTotal,
-          history_id: profile.historyId,
-          aliases: aliases.map((a) => ({
-            email: a.email,
-            name: a.name ?? null,
-            primary: a.primary,
-          })),
-        })
+          type: accountType,
+        }
+        if (accountType === 'google') {
+          data.messages_total = profile.messagesTotal
+          data.threads_total = profile.threadsTotal
+          data.history_id = profile.historyId
+        }
+        data.aliases = aliases.map((a) => ({
+          email: a.email,
+          name: a.name ?? null,
+          primary: a.primary,
+        }))
+        out.printYaml(data)
       }
     })
 }

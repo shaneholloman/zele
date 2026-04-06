@@ -58,6 +58,10 @@ async function initializePrisma(): Promise<PrismaClient> {
   // Run schema.sql — uses CREATE TABLE IF NOT EXISTS so it's idempotent
   await applySchema(prisma)
 
+  // Add new columns to existing Account tables (idempotent migration).
+  // CREATE TABLE IF NOT EXISTS doesn't add columns to pre-existing tables.
+  await migrateAccountColumns(prisma)
+
   // Secure database files (owner read/write only)
   secureDatabase()
 
@@ -91,6 +95,30 @@ async function applySchema(prisma: PrismaClient): Promise<void> {
   for (const statement of statements) {
     await prisma.$executeRawUnsafe(statement)
   }
+}
+
+/**
+ * Idempotent migration: add accountType and capabilities columns to Account
+ * if they don't already exist (for DBs created before IMAP/SMTP support).
+ * Also backfill existing Google accounts with their default capabilities.
+ */
+async function migrateAccountColumns(prisma: PrismaClient): Promise<void> {
+  const cols = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("Account")`)
+  const colNames = new Set(cols.map((c) => c.name))
+
+  if (!colNames.has('accountType')) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Account" ADD COLUMN "accountType" TEXT NOT NULL DEFAULT 'google'`)
+  }
+  if (!colNames.has('capabilities')) {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Account" ADD COLUMN "capabilities" TEXT NOT NULL DEFAULT ''`)
+  }
+
+  // Backfill: existing Google accounts should have capabilities set
+  await prisma.$executeRawUnsafe(`
+    UPDATE "Account"
+    SET "capabilities" = 'gmail,calendar,smtp'
+    WHERE "accountType" = 'google' AND ("capabilities" = '' OR "capabilities" IS NULL)
+  `)
 }
 
 /**

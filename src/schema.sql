@@ -2,6 +2,8 @@
 CREATE TABLE IF NOT EXISTS "Account" (
     "email" TEXT NOT NULL,
     "appId" TEXT NOT NULL,
+    "accountType" TEXT NOT NULL DEFAULT 'google',
+    "capabilities" TEXT NOT NULL DEFAULT '',
     "accountStatus" TEXT NOT NULL,
     "tokens" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL,

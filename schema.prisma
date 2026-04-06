@@ -13,15 +13,17 @@ enum AccountStatus {
   disabled
 }
 
-// Stores one OAuth credential set per (email, appId) pair.
-// appId is the Google OAuth client ID used during login, enabling
-// multiple OAuth apps per email (different quotas, scopes, etc.).
-// Default is the Thunderbird client ID (the original/only client).
+// Stores one credential set per (email, appId) pair.
+// appId is the Google OAuth client ID for Google accounts, or 'imap_smtp' for IMAP/SMTP accounts.
+// accountType discriminates the credential format stored in tokens.
+// capabilities is a comma-separated list of features: "gmail,calendar,smtp" or "imap,smtp".
 model Account {
   email         String
   appId         String
+  accountType   String    @default("google")  // "google" | "imap_smtp"
+  capabilities  String    @default("")         // comma-separated: "gmail,calendar,smtp" or "imap,smtp" or "imap"
   accountStatus AccountStatus
-  tokens        String // JSON-encoded OAuth2 Credentials
+  tokens        String // JSON: OAuth2 Credentials (google) or ImapSmtpCredentials (imap_smtp)
   createdAt     DateTime
   updatedAt     DateTime @updatedAt
 
