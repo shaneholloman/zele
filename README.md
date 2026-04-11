@@ -32,6 +32,27 @@ zele login
 
 Opens a browser for Google OAuth2. Repeat to add more accounts.
 
+#### Remote / headless login (for agents)
+
+`zele login` is interactive — it prints an authorization URL and waits for the redirect URL to be pasted back. In agent or headless environments, run it inside a `tmux` session so the process persists and can be driven programmatically:
+
+```bash
+# start login in a tmux session
+tmux new-session -d -s zele-login 'zele login'
+
+# read the authorization URL from tmux output
+tmux capture-pane -t zele-login -p
+
+# after the user completes consent in their browser, paste the redirect URL
+tmux send-keys -t zele-login 'http://localhost:...?code=...' Enter
+
+# verify login succeeded
+tmux capture-pane -t zele-login -p
+tmux kill-session -t zele-login
+```
+
+IMAP/SMTP login is non-interactive and requires no tmux wrapper.
+
 ### IMAP/SMTP accounts
 
 For non-Google providers (Fastmail, Outlook, Gmail with app passwords, any IMAP server):
@@ -103,6 +124,27 @@ zele mail spam <thread-id>
 zele mail unspam <thread-id>
 zele mail label <thread-id>
 zele mail trash-spam
+```
+
+All action commands accept **one or more thread IDs** and an optional `--account` flag. On Google accounts, archiving removes the `INBOX` label. On IMAP accounts, it moves the message to the server's Archive folder (`Archive`, `Archives`, `All Mail`, `[Gmail]/All Mail`, or `INBOX.Archive`).
+
+```bash
+# archive a single thread
+zele mail archive 18f3b7c9d2a1e4f0
+
+# archive multiple threads at once
+zele mail archive 18f3b7c9d2a1e4f0 18f3b7c9d2a1e4f1 18f3b7c9d2a1e4f2
+
+# archive from a specific account when you have multiple
+zele mail archive 18f3b7c9d2a1e4f0 --account you@example.com
+
+# bulk archive: pipe thread IDs from a search
+zele mail search "from:noreply@github.com older_than:7d" \
+  | yq '.[].id' \
+  | xargs zele mail archive
+
+# list archived threads later
+zele mail list --filter "in:archive"
 ```
 
 ### Search query syntax
@@ -230,6 +272,28 @@ Google and IMAP/SMTP accounts work side by side — `mail list` merges results f
 ## Output
 
 All structured data is output as YAML. In TTY mode, keys are colored for readability. Pipe output to other tools for scripting.
+
+## For AI agents
+
+**Always run `zele --help` first**, then `zele <command> --help` for subcommand details (e.g. `zele mail send --help`). The help output is the source of truth for commands, options, and flags. Read it in full — never pipe through `head`, `tail`, or `sed` to truncate.
+
+**Never use the TUI.** Running `zele` with no subcommand launches a human-facing terminal UI for browsing email. Agents must use the CLI subcommands (`zele mail list`, `zele cal events`, etc.) which output structured YAML that can be parsed and piped.
+
+**Always run `zele whoami` before account-scoped commands.** When the user asks to check email "for a specific account" (e.g. "my work email", "my personal Gmail"), run `zele whoami` first to list connected accounts and find the exact address to pass to `--account`. Never guess the email — pick it from the `whoami` output. The output also shows account type (`google` or `imap_smtp`) and capabilities so you know which features are available.
+
+```bash
+# list connected accounts first
+zele whoami
+
+# then scope commands to the right account
+zele mail list --account user@work.com
+```
+
+**Prefer YAML parsing over regex.** Pipe command output through `yq` to extract IDs and fields reliably:
+
+```bash
+zele mail list --filter "is:unread" | yq '.[].id' | xargs zele mail archive
+```
 
 ## License
 
