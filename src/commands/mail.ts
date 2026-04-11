@@ -56,11 +56,10 @@ export function registerMailCommands(cli: ZeleCli) {
     .option('--label <label>', 'Filter by label name')
     .option('--filter <filter>', 'Gmail search filter (e.g. "is:unread", "from:github", "has:attachment")')
     .action(async (options) => {
-      // Optional-value flags ([folder] / [max]) surface as string | boolean in goke
-      const folder =
-        typeof options.folder === 'string' ? options.folder : 'inbox'
-      const max =
-        typeof options.max === 'string' ? Number(options.max) : 20
+      // `options.folder` / `options.max` are `string | undefined` now.
+      // `''` (bare flag) falls back to the default via `||`.
+      const folder = options.folder || 'inbox'
+      const max = options.max ? Number(options.max) : 20
       const clients = await getClients(options.account)
 
       if (options.page && clients.length > 1) {
