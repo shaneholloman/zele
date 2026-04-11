@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.18
+
+1. **`mail unsubscribe <threadId>`** — unsubscribe from mailing list threads using the standard headers (RFC 2369 `List-Unsubscribe` + RFC 8058 `List-Unsubscribe-Post` one-click):
+
+   ```bash
+   # Auto (prefers RFC 8058 one-click → mailto → url)
+   zele mail unsubscribe 19d0f2a
+
+   # Plan only, do not execute
+   zele mail unsubscribe 19d0f2a --dry-run
+
+   # Force a specific mechanism
+   zele mail unsubscribe 19d0f2a --via mailto
+   zele mail unsubscribe 19d0f2a --via one-click --require-dkim
+
+   # Follow up after unsubscribing
+   zele mail unsubscribe 19d0f2a --then archive
+   zele mail unsubscribe 19d0f2a --then trash
+   ```
+
+   Execution details:
+
+   - **One-click (RFC 8058)**: issues an HTTPS `POST` with body `List-Unsubscribe=One-Click`, no cookies, no auth, and no HTTP redirects (senders MUST NOT redirect — 3xx is treated as failure).
+   - **`mailto:` (RFC 2369)**: sends the canonical unsubscribe email using the subject/body/cc encoded in the header's query params, via `GmailClient.sendMessage()` or `ImapSmtpClient.sendMessage()` (SMTP) depending on account type.
+   - **`http(s):` landing page**: printed to stdout for manual action when only a legacy URL is available.
+   - `--require-dkim` refuses one-click unless the message has `auth.authentic === true` (Gmail only — IMAP accounts lack SPF/DKIM/DMARC verdicts).
+
+   Works for **Google** and **IMAP/SMTP** accounts. The decision logic is pure and lives in `src/unsubscribe.ts` for easy testing.
+
+2. **`ParsedMessage.listUnsubscribePost`** — both Gmail and IMAP parsers now extract the RFC 8058 `List-Unsubscribe-Post` header so one-click capability is visible without re-fetching raw headers. The IMAP parser reads it directly from the raw MIME source that `getThread()` already fetches.
+
 ## 0.3.17
 
 1. **IMAP/SMTP account support** — connect any email provider (Fastmail, Outlook, Gmail app passwords, or any IMAP server) alongside existing Google OAuth accounts:

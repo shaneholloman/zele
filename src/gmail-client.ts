@@ -58,6 +58,7 @@ export interface ParsedMessage {
   inReplyTo?: string
   references?: string
   listUnsubscribe?: string
+  listUnsubscribePost?: string
   body: string // decoded body (html preferred for rich rendering)
   mimeType: string // 'text/plain' or 'text/html'
   textBody: string | null // decoded text/plain body when available (for reply parsing)
@@ -1332,6 +1333,7 @@ export class GmailClient {
       inReplyTo: getHeader('in-reply-to') ?? undefined,
       references: getHeader('references') ?? undefined,
       listUnsubscribe: getHeader('list-unsubscribe') ?? undefined,
+      listUnsubscribePost: getHeader('list-unsubscribe-post') ?? undefined,
       body,
       mimeType,
       textBody,

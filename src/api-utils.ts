@@ -126,6 +126,20 @@ export class UnsupportedError extends errore.createTaggedError({
   message: '$feature is not available for $accountType accounts. $hint',
 }) {}
 
+/** Returned when a thread has no List-Unsubscribe header (RFC 2369) so no
+ *  standardized unsubscribe mechanism is available. */
+export class UnsubscribeUnavailableError extends errore.createTaggedError({
+  name: 'UnsubscribeUnavailableError',
+  message: 'No List-Unsubscribe header on thread $threadId',
+}) {}
+
+/** Returned when the unsubscribe attempt itself failed (HTTP error, SMTP
+ *  send failure, redirect returned when RFC 8058 forbids it, etc.). */
+export class UnsubscribeFailedError extends errore.createTaggedError({
+  name: 'UnsubscribeFailedError',
+  message: 'Unsubscribe via $mechanism failed: $reason',
+}) {}
+
 /** Detect auth-like errors from underlying libraries (tsdav string errors, googleapis structured errors).
  *  Used inside clients to decide whether to return an AuthError.
  *  NOTE: String matching here is intentional — this is the boundary layer that converts

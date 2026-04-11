@@ -1207,6 +1207,8 @@ export class ImapSmtpClient {
     let body = ''
     let mimeType = 'text/plain'
     let textBody: string | null = null
+    let listUnsubscribe: string | undefined
+    let listUnsubscribePost: string | undefined
 
     if (msg.source) {
       const source = msg.source.toString('utf-8')
@@ -1214,6 +1216,16 @@ export class ImapSmtpClient {
       body = bodyResult.body
       mimeType = bodyResult.mimeType
       textBody = bodyResult.textBody
+
+      // Extract List-Unsubscribe / List-Unsubscribe-Post from raw MIME headers.
+      // envelope-based fetches don't surface these, but getThread always fetches
+      // source so it's available by the time we parse a full message.
+      const headerEnd = source.indexOf('\r\n\r\n')
+      const altEnd = source.indexOf('\n\n')
+      const headerSplit = headerEnd !== -1 ? headerEnd : altEnd
+      const headerText = headerSplit === -1 ? source : source.slice(0, headerSplit)
+      listUnsubscribe = this.getHeader(headerText, 'list-unsubscribe')
+      listUnsubscribePost = this.getHeader(headerText, 'list-unsubscribe-post')
     }
 
     // Extract attachments from bodyStructure
@@ -1240,7 +1252,8 @@ export class ImapSmtpClient {
       messageId: env.messageId ?? '',
       inReplyTo: env.inReplyTo,
       references: undefined,
-      listUnsubscribe: undefined,
+      listUnsubscribe,
+      listUnsubscribePost,
       body,
       mimeType,
       textBody,
