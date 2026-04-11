@@ -372,7 +372,7 @@ async function oneClickPost(url: string): Promise<void | UnsubscribeFailedError>
 
   // RFC 8058 §3.1: senders MUST NOT return redirects, so we refuse to follow.
   // `redirect: 'manual'` lets us see 3xx status codes instead of auto-following.
-  // 5-second timeout keeps a slow/unreachable endpoint from hanging the CLI.
+  // 10-second timeout keeps a slow/unreachable endpoint from hanging the CLI.
   const res = await errore.tryAsync({
     try: () =>
       fetch(parsed, {
@@ -380,7 +380,7 @@ async function oneClickPost(url: string): Promise<void | UnsubscribeFailedError>
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'List-Unsubscribe=One-Click',
         redirect: 'manual',
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(10_000),
       }),
     catch: (err) =>
       new UnsubscribeFailedError({
