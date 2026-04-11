@@ -31,6 +31,17 @@
 
 2. **`ParsedMessage.listUnsubscribePost`** — both Gmail and IMAP parsers now extract the RFC 8058 `List-Unsubscribe-Post` header so one-click capability is visible without re-fetching raw headers. The IMAP parser reads it directly from the raw MIME source that `getThread()` already fetches.
 
+3. **Hardened `mail unsubscribe` based on oracle review**:
+
+   - **One-click is default-off unless DKIM passes** — in `--via auto` mode, one-click is only used when the message has `auth.dkim === 'pass'`. Spoofed `List-Unsubscribe-Post` headers on unauthenticated spam can no longer trigger background HTTPS POSTs. Users can still force it with `--via one-click`.
+   - **DKIM gate uses `auth.dkim === 'pass'`** instead of the stricter `auth.authentic` (which required SPF + DKIM + DMARC all passing). This matches what RFC 8058 §4 actually cares about.
+   - **SSRF guard** — `oneClickPost()` rejects `http:` URLs, localhost, loopback, RFC 1918, link-local, and IPv6 ULA ranges before issuing the POST, so a spoofed `List-Unsubscribe` header can't make the CLI hit internal services.
+   - **15 s fetch timeout** via `AbortSignal.timeout()` so a slow endpoint can't hang the CLI.
+   - **Sender-order preservation** — non-one-click fallbacks are emitted in the order the sender declared them in `List-Unsubscribe` (RFC 2369 §2 left-to-right preference), instead of always grouping mailto before url.
+   - **`mailto:` parser no longer rewrites `+` to space** — RFC 6068 `mailto:` URIs are not form-urlencoded, so `foo+tag@example.com` stays intact instead of turning into `foo tag@example.com`.
+   - **CRLF sanitization** — `to`, `cc`, and `subject` parsed from `mailto:` headers have `\r` and `\n` stripped as defense-in-depth against header injection. `body` keeps newlines since it becomes message content.
+   - **Partial-success UX** — when `--then archive` or `--then trash` fails, the command now prints the unsubscribe success first so users can see that the irreversible action already completed, then reports the follow-up failure as a non-fatal warning.
+
 ## 0.3.17
 
 1. **IMAP/SMTP account support** — connect any email provider (Fastmail, Outlook, Gmail app passwords, or any IMAP server) alongside existing Google OAuth accounts:

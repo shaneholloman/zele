@@ -84,8 +84,9 @@ export function parseListUnsubscribeEntries(header: string): string[] {
  * Parse a mailto: URI into its target address and optional subject/body/cc.
  * Returns null if the URI is not a valid mailto.
  *
- * Supports percent-encoding per RFC 2368 / RFC 6068. Multiple `cc=` params
- * are merged; a single `cc=a@x.com,b@y.com` is split on commas.
+ * Supports percent-encoding per RFC 6068. Note: `mailto:` is NOT
+ * application/x-www-form-urlencoded, so `+` is preserved literally (this
+ * matters for plus-addressing like `foo+tag@example.com`).
  */
 export function parseMailto(uri: string): MailtoSpec | null {
   if (!/^mailto:/i.test(uri)) return null
@@ -96,13 +97,19 @@ export function parseMailto(uri: string): MailtoSpec | null {
 
   const decode = (s: string): string => {
     try {
-      return decodeURIComponent(s.replace(/\+/g, ' '))
+      // RFC 6068: only percent-decode. Do NOT rewrite `+` → space.
+      return decodeURIComponent(s)
     } catch {
       return s
     }
   }
 
-  const to = decode(rawTo).trim()
+  // Strip CRLF (defense-in-depth against header injection through mailto
+  // fields that get passed to SMTP/mimetext). Only body is allowed to keep
+  // newlines because it becomes message content.
+  const sanitizeHeader = (s: string) => s.replace(/[\r\n]/g, '').trim()
+
+  const to = sanitizeHeader(decode(rawTo))
   if (!to) return null
 
   const spec: MailtoSpec = { to }
@@ -114,11 +121,11 @@ export function parseMailto(uri: string): MailtoSpec | null {
     const eq = pair.indexOf('=')
     const key = (eq === -1 ? pair : pair.slice(0, eq)).toLowerCase()
     const value = eq === -1 ? '' : decode(pair.slice(eq + 1))
-    if (key === 'subject') spec.subject = value
+    if (key === 'subject') spec.subject = sanitizeHeader(value)
     else if (key === 'body') spec.body = value
     else if (key === 'cc') {
       for (const addr of value.split(',')) {
-        const trimmed = addr.trim()
+        const trimmed = sanitizeHeader(addr)
         if (trimmed) cc.push(trimmed)
       }
     }
@@ -145,8 +152,10 @@ export function parseListUnsubscribePost(header: string | undefined): boolean {
  *
  * Preference order:
  *   1. RFC 8058 one-click (List-Unsubscribe-Post present + https URL).
- *   2. mailto: entries from List-Unsubscribe.
- *   3. http(s): entries (landing page fallback).
+ *      Emitted first because it is the spec-preferred programmatic path.
+ *   2. The remaining entries in sender-declared order (RFC 2369 §2 says
+ *      clients should prefer left-to-right order). Each http(s): entry
+ *      becomes a `url` mechanism, each mailto: entry becomes a `mailto`.
  */
 export function planUnsubscribe({
   listUnsubscribe,
@@ -155,6 +164,7 @@ export function planUnsubscribe({
 }: {
   listUnsubscribe: string | undefined
   listUnsubscribePost: string | undefined
+  /** True iff DKIM=pass on the message. Null when unknown (IMAP, sent mail). */
   dkimAuthentic: boolean | null
 }): UnsubscribePlan {
   const warnings: string[] = []
@@ -163,42 +173,44 @@ export function planUnsubscribe({
   const entries = listUnsubscribe ? parseListUnsubscribeEntries(listUnsubscribe) : []
   const postOneClick = parseListUnsubscribePost(listUnsubscribePost)
 
-  const mailtoEntries = entries.filter((e) => /^mailto:/i.test(e))
-  const httpsEntries = entries.filter((e) => /^https:/i.test(e))
-  const httpEntries = entries.filter((e) => /^http:/i.test(e))
-
+  // First pass: RFC 8058 one-click extraction. Any https entries become
+  // one-click candidates if the Post header is present.
+  const oneClickUrls = new Set<string>()
   let hasOneClick = false
   if (postOneClick) {
+    const httpsEntries = entries.filter((e) => /^https:/i.test(e))
     if (httpsEntries.length > 0) {
       hasOneClick = true
       for (const url of httpsEntries) {
         mechanisms.push({ kind: 'one-click', url })
+        oneClickUrls.add(url)
       }
-    } else if (httpEntries.length > 0) {
+    } else if (entries.some((e) => /^http:/i.test(e))) {
       warnings.push('List-Unsubscribe-Post is present but no https URL (only http); RFC 8058 requires https')
     } else {
       warnings.push('List-Unsubscribe-Post is present but no http(s) URL to POST to')
     }
   }
 
-  for (const uri of mailtoEntries) {
-    const mailto = parseMailto(uri)
-    if (mailto) mechanisms.push({ kind: 'mailto', mailto })
-  }
-
-  // Any remaining http(s) entries become plain url fallbacks (but skip ones
-  // already emitted as one-click to avoid duplicate entries).
-  const alreadyOneClick = new Set(
-    mechanisms.filter((m) => m.kind === 'one-click').map((m) => (m as { url: string }).url),
-  )
-  for (const url of [...httpsEntries, ...httpEntries]) {
-    if (alreadyOneClick.has(url)) continue
-    mechanisms.push({ kind: 'url', url })
+  // Second pass: legacy fallbacks in sender-declared order (RFC 2369 §2
+  // left-to-right preference). http(s) URLs already claimed by one-click
+  // are skipped so we don't emit duplicate mechanisms.
+  for (const uri of entries) {
+    if (/^mailto:/i.test(uri)) {
+      const mailto = parseMailto(uri)
+      if (mailto) mechanisms.push({ kind: 'mailto', mailto })
+      continue
+    }
+    if (/^https?:/i.test(uri)) {
+      if (oneClickUrls.has(uri)) continue
+      mechanisms.push({ kind: 'url', url: uri })
+      continue
+    }
   }
 
   // DKIM safety notes for one-click. RFC 8058 §4 says the message SHOULD have
-  // a valid DKIM signature covering both headers; we can only check whether
-  // Gmail marked the message as fully authentic.
+  // a valid DKIM signature covering both headers; we approximate with a
+  // DKIM=pass verdict from the receiving MTA.
   if (hasOneClick) {
     if (dkimAuthentic === false) {
       warnings.push('DKIM did not pass; one-click may be spoofed by an attacker')

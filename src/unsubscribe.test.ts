@@ -112,11 +112,33 @@ describe('parseMailto', () => {
     `)
   })
 
-  test('mailto with plus-as-space in query', () => {
-    expect(parseMailto('mailto:list@x.com?subject=please+remove')).toMatchInlineSnapshot(`
+  test('mailto preserves + literally (RFC 6068 is not form-urlencoded)', () => {
+    // `+` must NOT become space — this matters for plus-addressing and for
+    // subjects containing "C++" etc.
+    expect(
+      parseMailto('mailto:list@x.com?subject=please+remove&cc=foo+tag@x.com'),
+    ).toMatchInlineSnapshot(`
       {
-        "subject": "please remove",
+        "cc": [
+          "foo+tag@x.com",
+        ],
+        "subject": "please+remove",
         "to": "list@x.com",
+      }
+    `)
+  })
+
+  test('mailto strips CRLF from headers', () => {
+    // Defense-in-depth: strip \r and \n from to, subject, cc. Body is left
+    // alone because it legitimately contains newlines.
+    expect(
+      parseMailto('mailto:a@b.com?subject=hi%0D%0ABcc:%20evil@c.com&body=line1%0Aline2'),
+    ).toMatchInlineSnapshot(`
+      {
+        "body": "line1
+      line2",
+        "subject": "hiBcc: evil@c.com",
+        "to": "a@b.com",
       }
     `)
   })
@@ -353,6 +375,63 @@ describe('planUnsubscribe', () => {
           {
             "kind": "one-click",
             "url": "https://b.example/u",
+          },
+        ],
+        "warnings": [],
+      }
+    `)
+  })
+
+  test('legacy fallback preserves sender order: https before mailto', () => {
+    // Without List-Unsubscribe-Post the sender's declared order wins
+    // (RFC 2369 §2 left-to-right preference). Make sure we emit https
+    // first when it comes first in the header.
+    const plan = planUnsubscribe({
+      listUnsubscribe: '<https://x.example/u>, <mailto:y@z.example>',
+      listUnsubscribePost: undefined,
+      dkimAuthentic: true,
+    })
+    expect(plan).toMatchInlineSnapshot(`
+      {
+        "dkimAuthentic": true,
+        "hasOneClick": false,
+        "mechanisms": [
+          {
+            "kind": "url",
+            "url": "https://x.example/u",
+          },
+          {
+            "kind": "mailto",
+            "mailto": {
+              "to": "y@z.example",
+            },
+          },
+        ],
+        "warnings": [],
+      }
+    `)
+  })
+
+  test('legacy fallback preserves sender order: mailto before https', () => {
+    const plan = planUnsubscribe({
+      listUnsubscribe: '<mailto:y@z.example>, <https://x.example/u>',
+      listUnsubscribePost: undefined,
+      dkimAuthentic: true,
+    })
+    expect(plan).toMatchInlineSnapshot(`
+      {
+        "dkimAuthentic": true,
+        "hasOneClick": false,
+        "mechanisms": [
+          {
+            "kind": "mailto",
+            "mailto": {
+              "to": "y@z.example",
+            },
+          },
+          {
+            "kind": "url",
+            "url": "https://x.example/u",
           },
         ],
         "warnings": [],

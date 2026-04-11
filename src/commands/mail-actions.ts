@@ -147,10 +147,10 @@ export function registerMailActionCommands(cli: ZeleCli) {
   cli
     .command('mail unsubscribe <threadId>', 'Unsubscribe from a mailing list thread (RFC 2369 / RFC 8058)')
     .option('--via <via>', z.enum(['auto', 'one-click', 'mailto', 'url']).describe(
-      'Mechanism to use (default: auto — prefers one-click, then mailto, then url)',
+      'Mechanism to use (default: auto — prefers one-click if DKIM passes, then mailto, then url)',
     ))
     .option('--dry-run', 'Print the unsubscribe plan without executing anything')
-    .option('--require-dkim', 'Refuse one-click unless the message has DKIM=pass (Gmail only)')
+    .option('--require-dkim', 'Refuse one-click unless the message has DKIM=pass')
     .option('--then <then>', z.enum(['nothing', 'archive', 'trash']).describe(
       'Follow-up action on the thread after unsubscribing (default: nothing)',
     ))
@@ -167,26 +167,31 @@ export function registerMailActionCommands(cli: ZeleCli) {
         handleCommandError(new UnsubscribeUnavailableError({ threadId }))
       }
 
-      const dkimAuthentic: boolean | null = latest.auth ? latest.auth.authentic : null
+      // DKIM gating: per RFC 8058 §4 the signed headers SHOULD include
+      // List-Unsubscribe and List-Unsubscribe-Post. We can't verify the
+      // `h=` tag here, so we approximate with the MTA's DKIM verdict
+      // (`auth.dkim === 'pass'`). SPF and DMARC aren't relevant for this
+      // specific header-signing check, so we don't require `auth.authentic`.
+      const dkimPass: boolean | null = latest.auth ? latest.auth.dkim === 'pass' : null
       const plan = planUnsubscribe({
         listUnsubscribe: latest.listUnsubscribe,
         listUnsubscribePost: latest.listUnsubscribePost,
-        dkimAuthentic,
+        dkimAuthentic: dkimPass,
       })
 
       if (plan.mechanisms.length === 0) {
         handleCommandError(new UnsubscribeUnavailableError({ threadId }))
       }
 
-      const chosen = pickMechanism(plan, via)
+      const chosen = pickMechanism(plan, via, dkimPass)
       if (chosen instanceof Error) handleCommandError(chosen)
 
-      if (options.requireDkim && chosen.kind === 'one-click' && dkimAuthentic !== true) {
+      if (options.requireDkim && chosen.kind === 'one-click' && dkimPass !== true) {
         handleCommandError(
           new UnsubscribeFailedError({
             mechanism: 'one-click',
             reason:
-              dkimAuthentic === false
+              dkimPass === false
                 ? 'DKIM did not pass and --require-dkim was set'
                 : 'DKIM status unknown and --require-dkim was set',
           }),
@@ -237,15 +242,9 @@ export function registerMailActionCommands(cli: ZeleCli) {
         return
       }
 
-      // Optional follow-up action on the thread.
-      if (then === 'archive') {
-        const r = await client.archive({ threadIds: [threadId] })
-        if (r instanceof Error) handleCommandError(r)
-      } else if (then === 'trash') {
-        const r = await client.trash({ threadId })
-        if (r instanceof Error) handleCommandError(r)
-      }
-
+      // Unsubscribe action itself succeeded at this point. Report that
+      // BEFORE attempting the follow-up so that a follow-up failure can't
+      // hide an already-completed (and irreversible) unsubscribe.
       out.printYaml({
         action: 'Unsubscribed',
         thread_id: threadId,
@@ -254,6 +253,23 @@ export function registerMailActionCommands(cli: ZeleCli) {
         plan: describePlan(plan),
       })
       out.success(`Unsubscribed via ${chosen.kind}`)
+
+      // Optional follow-up action on the thread. Failure here is non-fatal
+      // for the unsubscribe itself — warn and exit non-zero so scripts can
+      // still notice, but don't hide the success.
+      if (then === 'archive') {
+        const r = await client.archive({ threadIds: [threadId] })
+        if (r instanceof Error) {
+          out.error(`Unsubscribed, but follow-up archive failed: ${r.message}`)
+          process.exit(1)
+        }
+      } else if (then === 'trash') {
+        const r = await client.trash({ threadId })
+        if (r instanceof Error) {
+          out.error(`Unsubscribed, but follow-up trash failed: ${r.message}`)
+          process.exit(1)
+        }
+      }
     })
 }
 
@@ -261,17 +277,32 @@ export function registerMailActionCommands(cli: ZeleCli) {
 // Unsubscribe helpers
 // ---------------------------------------------------------------------------
 
-/** Pick a mechanism from a plan based on the --via flag. */
+/** Pick a mechanism from a plan based on the --via flag.
+ *
+ *  In `auto` mode we only use one-click if DKIM is known to pass, so a
+ *  spoofed List-Unsubscribe-Post header on an unauthenticated message
+ *  can't trigger a background POST. Users can still force it with
+ *  `--via one-click` (and can combine with `--require-dkim` to re-gate). */
 function pickMechanism(
   plan: UnsubscribePlan,
   via: 'auto' | 'one-click' | 'mailto' | 'url',
+  dkimPass: boolean | null,
 ): UnsubscribeMechanism | UnsubscribeFailedError {
   if (via === 'auto') {
-    const first = plan.mechanisms[0]
-    if (!first) {
+    for (const m of plan.mechanisms) {
+      if (m.kind === 'one-click' && dkimPass !== true) continue
+      return m
+    }
+    // Nothing usable in auto mode — the only remaining case is a plan made
+    // up entirely of one-click entries on a message we couldn't verify.
+    if (plan.mechanisms.length === 0) {
       return new UnsubscribeFailedError({ mechanism: 'auto', reason: 'no mechanisms available' })
     }
-    return first
+    return new UnsubscribeFailedError({
+      mechanism: 'auto',
+      reason:
+        'only one-click is advertised, but DKIM did not pass. Re-run with --via one-click to force it.',
+    })
   }
   const match = plan.mechanisms.find((m) => m.kind === via)
   if (match) return match
@@ -281,18 +312,75 @@ function pickMechanism(
   })
 }
 
+/** Reject URLs that point at localhost, loopback, or RFC1918 / link-local /
+ *  ULA ranges. This is a best-effort SSRF guard — it won't catch DNS
+ *  rebinding or hostnames that resolve to private IPs, but it stops the
+ *  obvious cases of `https://127.0.0.1/unsubscribe` hidden in a spoofed
+ *  List-Unsubscribe header. */
+function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (h === 'localhost' || h.endsWith('.localhost') || h === 'ip6-localhost') return true
+
+  // IPv4 literal
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    if (a === 10) return true
+    if (a === 127) return true
+    if (a === 0) return true
+    if (a === 169 && b === 254) return true // link-local
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    return false
+  }
+
+  // IPv6 literal — reject loopback (::1), link-local (fe80::/10), ULA (fc00::/7).
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true
+  if (/^fe[89ab][0-9a-f]:/i.test(h)) return true
+  if (/^f[cd][0-9a-f]{2}:/i.test(h)) return true
+  return false
+}
+
 /** Build an RFC 8058 one-click POST request and validate the response.
  *  Returns void on success, UnsubscribeFailedError on any failure. */
 async function oneClickPost(url: string): Promise<void | UnsubscribeFailedError> {
+  // Re-validate the URL at the executor boundary (not just the planner),
+  // in case a future code path constructs a mechanism without going
+  // through planUnsubscribe.
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch (err) {
+    return new UnsubscribeFailedError({
+      mechanism: 'one-click',
+      reason: `invalid URL: ${String(err)}`,
+      cause: err,
+    })
+  }
+  if (parsed.protocol !== 'https:') {
+    return new UnsubscribeFailedError({
+      mechanism: 'one-click',
+      reason: `refusing to POST to ${parsed.protocol} URL (RFC 8058 requires https)`,
+    })
+  }
+  if (isPrivateOrLoopbackHost(parsed.hostname)) {
+    return new UnsubscribeFailedError({
+      mechanism: 'one-click',
+      reason: `refusing to POST to private/loopback host ${parsed.hostname} (SSRF guard)`,
+    })
+  }
+
   // RFC 8058 §3.1: senders MUST NOT return redirects, so we refuse to follow.
   // `redirect: 'manual'` lets us see 3xx status codes instead of auto-following.
+  // Timeout keeps a slow/unreachable endpoint from hanging the CLI.
   const res = await errore.tryAsync({
     try: () =>
-      fetch(url, {
+      fetch(parsed, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'List-Unsubscribe=One-Click',
         redirect: 'manual',
+        signal: AbortSignal.timeout(15_000),
       }),
     catch: (err) =>
       new UnsubscribeFailedError({
