@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.3.20
+
+1. **`--draft` flag on `mail reply` and `mail forward`** — save as draft instead of sending immediately:
+
+   ```bash
+   # Draft a reply — sets In-Reply-To, References, and Re: subject automatically
+   zele mail reply <threadId> --body "sounds good" --draft
+
+   # Draft a reply-all
+   zele mail reply <threadId> --body "sounds good" --all --draft
+
+   # Draft a forward
+   zele mail forward <threadId> --to colleague@example.com --draft
+   ```
+
+   The draft is created with full threading headers (`In-Reply-To`, `References`) so it appears correctly inside the original thread in Gmail. For Gmail accounts, the draft is associated with the thread via the API `threadId` field. For IMAP accounts, the headers are set in the raw MIME message appended to the Drafts folder.
+
+2. **`draft update <draftId>`** — update the content of an existing draft, preserving unchanged fields:
+
+   ```bash
+   # Change just the body
+   zele draft update <draftId> --body "updated text"
+
+   # Read new body from stdin
+   echo "new body" | zele draft update <draftId> --body-file -
+
+   # Change recipients and subject
+   zele draft update <draftId> --to new@example.com --subject "New subject"
+   ```
+
+   Fetches the existing draft first and merges — only the fields you provide are changed. Thread association and send-as alias are preserved automatically.
+
+3. **`mail unsubscribe <threadId>`** — unsubscribe from mailing lists using standard headers (RFC 2369 `List-Unsubscribe` + RFC 8058 one-click):
+
+   ```bash
+   # Auto mode (prefers one-click → mailto → url)
+   zele mail unsubscribe <threadId>
+
+   # Preview only
+   zele mail unsubscribe <threadId> --dry-run
+
+   # Force a specific mechanism
+   zele mail unsubscribe <threadId> --via mailto
+   zele mail unsubscribe <threadId> --via one-click
+
+   # Archive or trash after unsubscribing
+   zele mail unsubscribe <threadId> --then archive
+   ```
+
+   One-click (`--via one-click`) sends an HTTPS POST with `List-Unsubscribe=One-Click`. In auto mode, one-click is only used when the message passes DKIM to prevent spoofed headers from triggering background requests. An SSRF guard blocks requests to localhost, RFC 1918, and link-local ranges.
+
+4. **`can_unsubscribe` and `one_click` in `mail list` / `mail search`** — every thread row now shows whether a standardized unsubscribe mechanism is present, so you can spot newsletters at a glance.
+
+5. **Fixed timeout on slow unsubscribe endpoints** — one-click POST requests now time out after 10 s via `AbortSignal.timeout()` so a slow endpoint can't hang the CLI.
+
+6. **`mail unsubscribe` tolerates 3xx redirects** — many real senders (ConvertKit, SendGrid, Mailchimp) redirect after processing the POST. 3xx is now treated as success with a warning, instead of failing. 4xx/5xx still fail.
+
 ## 0.3.19
 
 1. **`can_unsubscribe` and `one_click` fields in `mail list` / `mail search`** — every thread row now shows whether a standardized unsubscribe mechanism is advertised, so you can spot newsletters at a glance:
