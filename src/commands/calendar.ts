@@ -5,7 +5,7 @@
 
 import type { ZeleCli } from '../cli-types.js'
 import { z } from 'zod'
-import readline from 'node:readline'
+import * as clack from '@clack/prompts'
 import { getCalendarClients, getCalendarClient } from '../auth.js'
 import type { CalendarClient, CalendarEvent, CalendarListItem, EventListResult } from '../calendar-client.js'
 import { AuthError } from '../api-utils.js'
@@ -418,13 +418,12 @@ export function registerCalendarCommands(cli: ZeleCli) {
       const { client } = await getCalendarClient(options.account)
 
       if (!options.force && process.stdin.isTTY) {
-        const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(`Delete event ${eventId}? [y/N] `, resolve)
+        const confirmed = await clack.confirm({
+          message: `Delete event ${eventId}?`,
+          initialValue: false,
         })
-        rl.close()
 
-        if (answer.toLowerCase() !== 'y') {
+        if (clack.isCancel(confirmed) || !confirmed) {
           out.hint('Cancelled')
           return
         }

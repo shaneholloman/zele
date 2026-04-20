@@ -5,6 +5,7 @@
 
 import type { ZeleCli } from '../cli-types.js'
 import { z } from 'zod'
+import * as clack from '@clack/prompts'
 import { getClients, getGmailClient } from '../auth.js'
 import { AuthError, UnsupportedError } from '../api-utils.js'
 import type { GmailClient } from '../gmail-client.js'
@@ -122,14 +123,12 @@ export function registerLabelCommands(cli: ZeleCli) {
     .option('--force', 'Skip confirmation')
     .action(async (labelId, options) => {
       if (!options.force && process.stdin.isTTY) {
-        const readline = await import('node:readline')
-        const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(`Delete label ${labelId}? [y/N] `, resolve)
+        const confirmed = await clack.confirm({
+          message: `Delete label ${labelId}?`,
+          initialValue: false,
         })
-        rl.close()
 
-        if (answer.toLowerCase() !== 'y') {
+        if (clack.isCancel(confirmed) || !confirmed) {
           out.hint('Cancelled')
           return
         }

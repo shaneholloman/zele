@@ -6,6 +6,7 @@
 import type { ZeleCli } from '../cli-types.js'
 import { z } from 'zod'
 import fs from 'node:fs'
+import * as clack from '@clack/prompts'
 import { getClients, getClient } from '../auth.js'
 import type { GmailClient } from '../gmail-client.js'
 import type { ImapSmtpClient } from '../imap-smtp-client.js'
@@ -240,14 +241,12 @@ export function registerDraftCommands(cli: ZeleCli) {
     .option('--force', 'Skip confirmation')
     .action(async (draftId, options) => {
       if (!options.force && process.stdin.isTTY) {
-        const readline = await import('node:readline')
-        const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(`Delete draft ${draftId}? [y/N] `, resolve)
+        const confirmed = await clack.confirm({
+          message: `Delete draft ${draftId}?`,
+          initialValue: false,
         })
-        rl.close()
 
-        if (answer.toLowerCase() !== 'y') {
+        if (clack.isCancel(confirmed) || !confirmed) {
           out.hint('Cancelled')
           return
         }
