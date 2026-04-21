@@ -100,16 +100,15 @@ zele logout         # remove credentials
 ### Mail
 
 ```bash
-zele mail list                           # list recent threads
-zele mail list --filter "is:unread"      # only unread threads
-zele mail list --limit 5                 # show only 5 threads
-zele mail search "from:github"           # search with Gmail query syntax
-zele mail search "from:github" --limit 50  # search with more results
-zele mail read <thread-id>       # read a thread
-zele mail send                    # send an email
-zele mail reply <thread-id>      # reply to a thread
-zele mail forward <thread-id>    # forward a thread
-zele mail watch                   # watch for new emails (poll)
+zele mail list --limit 100                        # list up to 100 recent threads
+zele mail list --filter "is:unread" --limit 100   # list unread threads
+zele mail list --filter "is:unread" --limit 100 | yq '.[].id' | xargs zele mail read  # read all unread
+zele mail search "from:github" --limit 100        # search with Gmail query syntax
+zele mail read <thread-id>                        # read a thread
+zele mail send                                    # send an email
+zele mail reply <thread-id>                       # reply to a thread
+zele mail forward <thread-id>                     # forward a thread
+zele mail watch                                   # watch for new emails (poll)
 ```
 
 ### Mail actions
@@ -141,12 +140,12 @@ zele mail archive 18f3b7c9d2a1e4f0 18f3b7c9d2a1e4f1 18f3b7c9d2a1e4f2
 zele mail archive 18f3b7c9d2a1e4f0 --account you@example.com
 
 # bulk archive: pipe thread IDs from a search
-zele mail search "from:noreply@github.com older_than:7d" \
+zele mail search "from:noreply@github.com older_than:7d" --limit 100 \
   | yq '.[].id' \
   | xargs zele mail archive
 
 # list archived threads later
-zele mail list --filter "in:archive"
+zele mail list --filter "in:archive" --limit 100
 ```
 
 ### Search query syntax
@@ -175,9 +174,9 @@ For **Google accounts**, `mail search` and `mail list --filter` use [Gmail searc
 | `OR` / `{ }` | `from:a OR from:b` | yes | no |
 
 ```bash
-zele mail list --filter "is:unread"
-zele mail list --filter "from:github newer_than:7d" --folder sent
-zele mail search "from:github is:unread newer_than:7d"
+zele mail list --filter "is:unread" --limit 100
+zele mail list --filter "from:github newer_than:7d" --folder sent --limit 100
+zele mail search "from:github is:unread newer_than:7d" --limit 100
 zele mail watch --filter "from:github has:attachment"
 ```
 
@@ -294,7 +293,11 @@ zele mail list --account user@work.com
 **Prefer YAML parsing over regex.** Pipe command output through `yq` to extract IDs and fields reliably:
 
 ```bash
-zele mail list --filter "is:unread" | yq '.[].id' | xargs zele mail archive
+# read all unread emails
+zele mail list --filter "is:unread" --limit 100 | yq '.[].id' | xargs zele mail read
+
+# bulk archive unread
+zele mail list --filter "is:unread" --limit 100 | yq '.[].id' | xargs zele mail archive
 ```
 
 ## License
