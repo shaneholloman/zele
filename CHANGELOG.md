@@ -365,7 +365,7 @@ Name
 ## 0.3.0
 
 - **Mail:** Add `mail watch` command for polling new emails using Gmail History API (incremental sync)
-- **Mail:** Add support for Gmail search operators in `watch --query` (e.g., `from:github`, `is:unread`)
+- **Mail:** Add support for Gmail search operators in `watch --filter` (e.g., `from:github`, `is:unread`)
 - **Mail:** Show sender email address in `from` fields for better clarity
 - **Fixes:** Improve query parsing and handle server-only operators correctly
 

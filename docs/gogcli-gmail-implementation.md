@@ -121,7 +121,7 @@ for _, it := range items {
 ## Pagination
 
 **Pattern used everywhere**:
-- `--max` (alias `--limit`): passed as `MaxResults(n)` to the API call
+- `--limit`: passed as `MaxResults(n)` to the API call
 - `--page`: passed as `PageToken(token)` to the API call
 - Response includes `NextPageToken`
 - In JSON mode: `nextPageToken` field in output
@@ -224,7 +224,7 @@ const nameToId = new Map(
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `query` | arg[] | required | Gmail search query (joined with spaces) |
-| `--max` | int | 10 | Max results per page |
+| `--limit` | int | 10 | Max results per page |
 | `--page` | string | - | Page token for next page |
 | `--oldest` | bool | false | Show first message date instead of last |
 | `--timezone` | string | local | IANA timezone for dates |
