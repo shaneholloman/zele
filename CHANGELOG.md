@@ -2,23 +2,33 @@
 
 ## 0.3.21
 
-- **`--limit` everywhere** — replaces `--max` on `mail list`, `mail search`, `cal events`, and `draft list`. Controls how many results are fetched and shown (default: 20):
+1. **Polished interactive prompts** — replaced raw readline prompts with `@clack/prompts` across auth, draft, calendar, and label commands. All confirmation dialogs and selects now have a clean, styled UI.
 
-  ```bash
-  zele mail list --limit 5
-  zele mail list --filter "is:unread" --limit 10
-  zele mail search "from:github" --limit 50
-  zele cal events --limit 5
-  zele draft list --limit 10
-  ```
+2. **`--method` flag on `zele login`** — skip the interactive prompt and log in non-interactively:
 
-- **`--filter` everywhere** — replaces `--query` on `cal events`, `draft list`, and `mail watch`. Now consistent with `mail list`:
+   ```bash
+   zele login --method google
+   zele login --method imap
+   ```
 
-  ```bash
-  zele cal events --filter "standup"
-  zele draft list --filter "invoice"
-  zele mail watch --filter "from:github"
-  ```
+   Non-TTY environments (scripts, CI) without `--method` now exit with a clear message instead of hanging.
+
+3. **`--limit` everywhere** — replaces `--max` on `mail list`, `mail search`, `cal events`, and `draft list`:
+
+   ```bash
+   zele mail list --filter "is:unread" --limit 100
+   zele mail search "from:github" --limit 100
+   zele cal events --limit 100
+   zele draft list --limit 100
+   ```
+
+4. **`--filter` everywhere** — replaces `--query` on `cal events`, `draft list`, and `mail watch`. Now consistent with `mail list`:
+
+   ```bash
+   zele cal events --filter "standup"
+   zele draft list --filter "invoice"
+   zele mail watch --filter "from:github"
+   ```
 
 ## 0.3.20
 
