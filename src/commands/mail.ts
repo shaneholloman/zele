@@ -35,6 +35,23 @@ function formatLabels(labelIds: string[], labelMap?: Map<string, string>): strin
   return visible.join(', ')
 }
 
+function resolveAttachments(filePaths?: string[]) {
+  return filePaths
+    ? filePaths.map((filePath) => {
+        const resolved = path.resolve(filePath)
+        if (!fs.existsSync(resolved)) {
+          out.error(`Attachment not found: ${resolved}`)
+          process.exit(1)
+        }
+        return {
+          filename: path.basename(resolved),
+          mimeType: mimeLookup(resolved) ?? 'application/octet-stream',
+          content: fs.readFileSync(resolved),
+        }
+      })
+    : undefined
+}
+
 // ---------------------------------------------------------------------------
 // Register commands
 // ---------------------------------------------------------------------------
@@ -424,21 +441,7 @@ export function registerMailCommands(cli: ZeleCli) {
         process.exit(1)
       }
 
-      // Resolve attachment file paths (one file per --attach flag)
-      const attachments = options.attach
-        ? options.attach.map((filePath) => {
-            const resolved = path.resolve(filePath)
-            if (!fs.existsSync(resolved)) {
-              out.error(`Attachment not found: ${resolved}`)
-              process.exit(1)
-            }
-            return {
-              filename: path.basename(resolved),
-              mimeType: mimeLookup(resolved) ?? 'application/octet-stream',
-              content: fs.readFileSync(resolved),
-            }
-          })
-        : undefined
+      const attachments = resolveAttachments(options.attach)
 
       const parseEmails = (str: string) =>
         str.split(',').map((e) => e.trim()).filter(Boolean).map((email) => ({ email }))
@@ -492,21 +495,7 @@ export function registerMailCommands(cli: ZeleCli) {
         process.exit(1)
       }
 
-      // Resolve attachment file paths (one file per --attach flag)
-      const attachments = options.attach
-        ? options.attach.map((filePath) => {
-            const resolved = path.resolve(filePath)
-            if (!fs.existsSync(resolved)) {
-              out.error(`Attachment not found: ${resolved}`)
-              process.exit(1)
-            }
-            return {
-              filename: path.basename(resolved),
-              mimeType: mimeLookup(resolved) ?? 'application/octet-stream',
-              content: fs.readFileSync(resolved),
-            }
-          })
-        : undefined
+      const attachments = resolveAttachments(options.attach)
 
       const { client } = await getClient(options.account)
 

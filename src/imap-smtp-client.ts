@@ -1211,57 +1211,32 @@ export class ImapSmtpClient {
     const refs = [lastMsg.references, lastMsg.messageId].filter(Boolean).join(' ')
     const subject = lastMsg.subject.startsWith('Re:') ? lastMsg.subject : `Re: ${lastMsg.subject}`
 
-    // Build MIME with reply headers using MailComposer to support attachments
-    const mailOptions: any = {
-      from: fromEmail ?? this.account.email,
-      to: to.map((r) => r.email).join(', '),
-      subject,
-      text: body,
-      date: new Date(),
-    }
+    // Build MIME with reply headers using mimetext (already used elsewhere in this client)
+    const msg = createMimeMessage()
+    msg.setSender(fromEmail ?? this.account.email)
+    msg.setRecipients(to.map((r) => ({ name: '', addr: r.email })))
+    msg.setSubject(subject)
     if (resolvedCc && resolvedCc.length > 0) {
-      mailOptions.cc = resolvedCc.map((r) => r.email).join(', ')
+      msg.setCc(resolvedCc.map((r) => ({ name: '', addr: r.email })))
     }
+    msg.addMessage({ contentType: 'text/plain', data: body })
     if (lastMsg.messageId) {
-      mailOptions.inReplyTo = lastMsg.messageId
+      msg.setHeader('In-Reply-To', lastMsg.messageId)
     }
     if (refs) {
-      mailOptions.references = refs
+      msg.setHeader('References', refs)
     }
-    if (attachments && attachments.length > 0) {
-      mailOptions.attachments = attachments.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.mimeType,
-      }))
+    if (attachments) {
+      for (const att of attachments) {
+        msg.addAttachment({
+          filename: att.filename,
+          contentType: att.mimeType,
+          data: att.content.toString('base64'),
+        })
+      }
     }
 
-    const nodemailer = await import('nodemailer')
-    const MailComposer = (nodemailer as any).default?.MailComposer ?? (nodemailer as any).MailComposer
-    let rawBuffer: Buffer
-    if (MailComposer) {
-      const mail = new MailComposer(mailOptions)
-      rawBuffer = await new Promise<Buffer>((resolve, reject) => {
-        mail.compile().build((err: Error | null, message: Buffer) => {
-          if (err) reject(err)
-          else resolve(message)
-        })
-      })
-    } else {
-      // Fallback: plain-text RFC 822 without attachment support
-      const headers = [
-        `From: ${mailOptions.from}`,
-        `To: ${mailOptions.to}`,
-        `Subject: ${subject}`,
-        `Date: ${new Date().toUTCString()}`,
-        `MIME-Version: 1.0`,
-        `Content-Type: text/plain; charset=utf-8`,
-        ...(mailOptions.cc ? [`Cc: ${mailOptions.cc}`] : []),
-        ...(lastMsg.messageId ? [`In-Reply-To: ${lastMsg.messageId}`] : []),
-        ...(refs ? [`References: ${refs}`] : []),
-      ]
-      rawBuffer = Buffer.from(headers.join('\r\n') + '\r\n\r\n' + body)
-    }
+    const rawBuffer = Buffer.from(msg.asRaw())
 
     const result = await this.withImap(async (client) => {
       const draftsPath = await this.resolveMailboxPath(client, 'drafts')
