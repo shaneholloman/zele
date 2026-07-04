@@ -471,6 +471,7 @@ export function registerMailCommands(cli: ZeleCli) {
     .option('--cc <cc>', z.string().describe('Additional CC recipients'))
     .option('--all', 'Reply all (include all original recipients)')
     .option('--from <from>', z.string().describe('Send-as alias email'))
+    .option('--attach <attach>', z.array(z.string()).describe('File to attach (repeatable: --attach a.pdf --attach b.png)'))
     .option('--draft', 'Save as draft instead of sending')
     .action(async (threadId, options) => {
       let body = options.body ?? ''
@@ -491,6 +492,22 @@ export function registerMailCommands(cli: ZeleCli) {
         process.exit(1)
       }
 
+      // Resolve attachment file paths (one file per --attach flag)
+      const attachments = options.attach
+        ? options.attach.map((filePath) => {
+            const resolved = path.resolve(filePath)
+            if (!fs.existsSync(resolved)) {
+              out.error(`Attachment not found: ${resolved}`)
+              process.exit(1)
+            }
+            return {
+              filename: path.basename(resolved),
+              mimeType: mimeLookup(resolved) ?? 'application/octet-stream',
+              content: fs.readFileSync(resolved),
+            }
+          })
+        : undefined
+
       const { client } = await getClient(options.account)
 
       const cc = options.cc
@@ -504,6 +521,7 @@ export function registerMailCommands(cli: ZeleCli) {
           replyAll: options.all,
           cc,
           fromEmail: options.from,
+          attachments,
         })
         if (result instanceof Error) handleCommandError(result)
 
@@ -518,6 +536,7 @@ export function registerMailCommands(cli: ZeleCli) {
         replyAll: options.all,
         cc,
         fromEmail: options.from,
+        attachments,
       })
       if (result instanceof Error) handleCommandError(result)
 

@@ -599,12 +599,14 @@ export class ImapSmtpClient {
     replyAll = false,
     cc,
     fromEmail,
+    attachments,
   }: {
     threadId: string
     body: string
     replyAll?: boolean
     cc?: Array<{ email: string }>
     fromEmail?: string
+    attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
   }): Promise<EmptyThreadError | UnsupportedError | AuthError | ApiError | { id: string; threadId: string; labelIds: string[] }> {
     const thread = await this.getThread({ threadId })
     if (thread.parsed.messages.length === 0) {
@@ -643,6 +645,7 @@ export class ImapSmtpClient {
       cc: resolvedCc,
       inReplyTo: lastMsg.messageId,
       references: refs || undefined,
+      attachments,
     })
   }
 
@@ -1168,12 +1171,14 @@ export class ImapSmtpClient {
     replyAll = false,
     cc,
     fromEmail,
+    attachments,
   }: {
     threadId: string
     body: string
     replyAll?: boolean
     cc?: Array<{ email: string }>
     fromEmail?: string
+    attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
   }): Promise<EmptyThreadError | AuthError | ApiError | { id: string; message: { id: string }; threadId: string }> {
     const thread = await this.getThread({ threadId })
     if (thread.parsed.messages.length === 0) {
@@ -1206,27 +1211,57 @@ export class ImapSmtpClient {
     const refs = [lastMsg.references, lastMsg.messageId].filter(Boolean).join(' ')
     const subject = lastMsg.subject.startsWith('Re:') ? lastMsg.subject : `Re: ${lastMsg.subject}`
 
-    // Build MIME with reply headers
-    const headers = [
-      `From: ${fromEmail ?? this.account.email}`,
-      `To: ${to.map((r) => r.email).join(', ')}`,
-      `Subject: ${subject}`,
-      `Date: ${new Date().toUTCString()}`,
-      `MIME-Version: 1.0`,
-      `Content-Type: text/plain; charset=utf-8`,
-    ]
+    // Build MIME with reply headers using MailComposer to support attachments
+    const mailOptions: any = {
+      from: fromEmail ?? this.account.email,
+      to: to.map((r) => r.email).join(', '),
+      subject,
+      text: body,
+      date: new Date(),
+    }
     if (resolvedCc && resolvedCc.length > 0) {
-      headers.push(`Cc: ${resolvedCc.map((r) => r.email).join(', ')}`)
+      mailOptions.cc = resolvedCc.map((r) => r.email).join(', ')
     }
     if (lastMsg.messageId) {
-      headers.push(`In-Reply-To: ${lastMsg.messageId}`)
+      mailOptions.inReplyTo = lastMsg.messageId
     }
     if (refs) {
-      headers.push(`References: ${refs}`)
+      mailOptions.references = refs
+    }
+    if (attachments && attachments.length > 0) {
+      mailOptions.attachments = attachments.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.mimeType,
+      }))
     }
 
-    const raw = headers.join('\r\n') + '\r\n\r\n' + body
-    const rawBuffer = Buffer.from(raw)
+    const nodemailer = await import('nodemailer')
+    const MailComposer = (nodemailer as any).default?.MailComposer ?? (nodemailer as any).MailComposer
+    let rawBuffer: Buffer
+    if (MailComposer) {
+      const mail = new MailComposer(mailOptions)
+      rawBuffer = await new Promise<Buffer>((resolve, reject) => {
+        mail.compile().build((err: Error | null, message: Buffer) => {
+          if (err) reject(err)
+          else resolve(message)
+        })
+      })
+    } else {
+      // Fallback: plain-text RFC 822 without attachment support
+      const headers = [
+        `From: ${mailOptions.from}`,
+        `To: ${mailOptions.to}`,
+        `Subject: ${subject}`,
+        `Date: ${new Date().toUTCString()}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: text/plain; charset=utf-8`,
+        ...(mailOptions.cc ? [`Cc: ${mailOptions.cc}`] : []),
+        ...(lastMsg.messageId ? [`In-Reply-To: ${lastMsg.messageId}`] : []),
+        ...(refs ? [`References: ${refs}`] : []),
+      ]
+      rawBuffer = Buffer.from(headers.join('\r\n') + '\r\n\r\n' + body)
+    }
 
     const result = await this.withImap(async (client) => {
       const draftsPath = await this.resolveMailboxPath(client, 'drafts')

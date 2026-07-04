@@ -576,12 +576,14 @@ export class GmailClient {
     replyAll = false,
     cc,
     fromEmail,
+    attachments,
   }: {
     threadId: string
     body: string
     replyAll?: boolean
     cc?: Array<{ email: string }>
     fromEmail?: string
+    attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
   }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Message> {
     const { parsed: thread } = await this.getThread({ threadId })
     if (thread.messages.length === 0) {
@@ -626,6 +628,7 @@ export class GmailClient {
       inReplyTo: lastMsg.messageId,
       references: refs || undefined,
       fromEmail,
+      attachments,
     })
 
     await this.invalidateThread(threadId)
@@ -871,12 +874,14 @@ export class GmailClient {
     replyAll = false,
     cc,
     fromEmail,
+    attachments,
   }: {
     threadId: string
     body: string
     replyAll?: boolean
     cc?: Array<{ email: string }>
     fromEmail?: string
+    attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
   }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Draft> {
     const { parsed: thread } = await this.getThread({ threadId })
     if (thread.messages.length === 0) {
@@ -920,6 +925,7 @@ export class GmailClient {
       inReplyTo: lastMsg.messageId,
       references: refs || undefined,
       fromEmail,
+      attachments,
     })
 
     const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
