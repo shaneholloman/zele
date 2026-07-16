@@ -12,3 +12,5 @@ zele mail reply <threadId> --body "Draft with attachment" --attach doc.pdf --dra
 
 Works with both Gmail and IMAP/SMTP accounts. The `--attach` flag is repeatable,
 matching the existing `mail send --attach` behavior.
+
+Closes #14
