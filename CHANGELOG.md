@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.0
+
+1. **`mail watch` exits on first match** — `mail watch` now blocks until the first email matching the filter arrives, prints it, and exits with code 0. This makes it useful for agents that need to wait for a specific email (verification codes, replies, etc.). The `--once` flag has been removed since the new behavior subsumes it.
+
+   New `--timeout` flag sets a maximum wait time in seconds. If no matching email arrives before the deadline, the command exits with code 1:
+
+   ```bash
+   # wait for a reply from alice
+   zele mail watch --filter "is:unread from:alice@example.com"
+
+   # wait for a verification code with a 5-minute timeout
+   zele mail watch --filter "is:unread subject:verification" --timeout 300
+
+   # send then wait for the reply
+   zele mail send --to bob@example.com --subject "Question" --body "Can you check this?"
+   zele mail watch --filter "is:unread from:bob subject:Re:Question" --timeout 600
+   ```
+
+2. **Attachment support for `mail reply`** — send file attachments with replies and draft replies via the `--attach` flag:
+
+   ```bash
+   zele mail reply <threadId> --body "See attached" --attach report.pdf
+   zele mail reply <threadId> --body "Multiple files" --attach a.pdf --attach b.png
+   zele mail reply <threadId> --body "Draft with attachment" --attach doc.pdf --draft
+   ```
+
+   Works with both Gmail and IMAP/SMTP accounts. The `--attach` flag is repeatable, matching the existing `mail send --attach` behavior. (Closes #14)
+
+3. **Shell completions and goke framework alignment** — install tab completions for zsh and bash via `zele completions install`. AI agents (Claude, Cursor, Codex, etc.) are detected automatically and skip interactive prompts. Google OAuth login fails fast in non-TTY environments with clear instructions instead of hanging. Destructive commands (`cal delete`, `draft delete`, `label delete`) now require `--force` in non-TTY/agent mode.
+
+4. **Interactive IMAP login** — `zele login imap` is now fully interactive in TTY mode: prompts for email, shows a provider preset selector (Fastmail, Gmail, Outlook, Custom) that auto-fills IMAP/SMTP hosts and ports, and prompts for password with masked input. All flags still work for non-interactive/agent use.
+
+5. **Interactive prompts for `cal respond` and `logout`** — `cal respond` prompts for accept/decline/tentative when `--status` is omitted. `logout` shows an account selector when multiple accounts are logged in.
+
+6. **Atomic schema initialization** — schema DDL and column migrations now run inside a single `BEGIN IMMEDIATE` transaction via the libsql client, acquiring the write lock once instead of 13+ separate transactions. Eliminates `SQLITE_BUSY` errors when multiple CLI processes start concurrently (TUI + watch + CLI commands).
+
+7. **Fixed transient SQLITE_BUSY errors** — concurrent process access no longer causes intermittent database busy errors. Thanks @Cyberlane for #13!
+
 ## 0.4.0
 
 1. **Run CLI under Node.js** — all CLI subcommands (`mail`, `cal`, `label`, etc.) now work with plain Node.js v18+. The TUI auto-spawns bun when running under Node; if bun isn't installed, it shows install instructions:
