@@ -111,6 +111,7 @@ export interface SentInThread<M> {
   message: M
   to: string[]
   cc: string[]
+  bcc: string[]
   recipientSource: ReplyRecipientSource
 }
 
@@ -123,15 +124,15 @@ export function replySubject(subject: string): string {
  * The message a reply/forward should be based on: the last non-draft message.
  * Drafts live in thread.messages too, and a draft's From is always me while its
  * Message-ID is empty, so anchoring on one both misroutes the reply and breaks
- * threading. Falls back to the last message when a thread is nothing but drafts.
+ * threading. Returns undefined for a draft-only thread — there is nothing to
+ * reply to yet, and replying to a draft would produce an empty In-Reply-To.
  */
 export function threadAnchor<M extends { isDraft: boolean }>(messages: M[]): M | undefined {
-  return messages.findLast((m) => !m.isDraft) ?? messages[messages.length - 1]
+  return messages.findLast((m) => !m.isDraft)
 }
 
 export interface ReplyResolution<M extends ReplyAnchorMessage> {
-  /** Message that drives In-Reply-To / References / subject. Never a draft unless
-   *  the thread contains nothing else. */
+  /** Message that drives In-Reply-To / References / subject. Never a draft. */
   anchor: M
   to: Sender[]
   cc: Sender[]
@@ -139,6 +140,24 @@ export interface ReplyResolution<M extends ReplyAnchorMessage> {
 }
 
 const normalize = (email: string) => email.trim().toLowerCase()
+
+/** Normalize delivery aliases only for deciding whether an address is "me".
+ * Plus tags route to the same mailbox on providers that support them. Consumer
+ * Gmail also ignores dots and treats googlemail.com as gmail.com. Do not use
+ * this for outgoing addresses: the exact address still matters to the user. */
+function normalizeSelfAddress(email: string): string {
+  const normalized = normalize(email)
+  const separator = normalized.lastIndexOf('@')
+  if (separator === -1) return normalized
+
+  let local = normalized.slice(0, separator).replace(/\+.*/, '')
+  let domain = normalized.slice(separator + 1)
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    local = local.replaceAll('.', '')
+    domain = 'gmail.com'
+  }
+  return `${local}@${domain}`
+}
 
 /** Case-insensitive dedupe that keeps the first occurrence (and its display name). */
 function dedupe(addresses: Sender[]): Sender[] {
@@ -169,9 +188,9 @@ function dedupe(addresses: Sender[]): Sender[] {
  *   4. else: walk backwards for the most recent message not sent by me
  *   5. else: SelfRecipientError / AmbiguousRecipientError
  *
- * Self matching is exact and case-insensitive. Plus-tags are deliberately NOT
- * stripped: `me+foo@gmail.com` is treated as a different person, because people
- * legitimately use plus-aliases to address separate inboxes and filters.
+ * Self matching is case-insensitive and treats plus-tagged variants as the same
+ * mailbox. Gmail/Googlemail dotted variants are equivalent too. This is used
+ * only by the safety guard; outgoing addresses retain their exact spelling.
  */
 export function resolveReplyRecipients<M extends ReplyAnchorMessage>({
   messages,
@@ -189,11 +208,11 @@ export function resolveReplyRecipients<M extends ReplyAnchorMessage>({
   replyAll?: boolean
   explicitTo?: Sender[]
   extraCc?: Sender[]
-  /** Skip self-filtering entirely — used by --allow-self for note-to-self replies. */
+  /** Allow self only when no external recipient can be inferred. */
   allowSelf?: boolean
 }): ReplyResolution<M> | SelfRecipientError | AmbiguousRecipientError {
-  const self = new Set(selfAddresses.map(normalize).filter(Boolean))
-  const isSelf = (a: Sender) => self.has(normalize(a.email))
+  const self = new Set(selfAddresses.map(normalizeSelfAddress).filter(Boolean))
+  const isSelf = (a: Sender) => self.has(normalizeSelfAddress(a.email))
   /** Drop empty addresses and the parser's fallback placeholder — never mail those. */
   const usable = (a: Sender) => {
     const email = normalize(a.email)
@@ -202,7 +221,8 @@ export function resolveReplyRecipients<M extends ReplyAnchorMessage>({
 
   // Drafts have no Message-ID and are always "from me", so they must never
   // drive recipients or threading headers.
-  const anchor = threadAnchor(messages)!
+  const anchor = threadAnchor(messages)
+  if (!anchor) return new AmbiguousRecipientError({ threadId })
 
   const resolveTo = (): { to: Sender[]; source: ReplyRecipientSource } | SelfRecipientError | AmbiguousRecipientError => {
     if (explicitTo && explicitTo.length > 0) {
@@ -213,8 +233,6 @@ export function resolveReplyRecipients<M extends ReplyAnchorMessage>({
     const replyToAddresses = (anchor.replyTo ? parseAddressList(anchor.replyTo) : []).filter(usable)
     const candidates = (replyToAddresses.length > 0 ? replyToAddresses : [anchor.from]).filter(usable)
     const candidateSource: ReplyRecipientSource = replyToAddresses.length > 0 ? 'reply-to' : 'from'
-
-    if (allowSelf && candidates.length > 0) return { to: candidates, source: candidateSource }
 
     const external = candidates.filter((a) => !isSelf(a))
     if (external.length > 0) return { to: external, source: candidateSource }
@@ -238,6 +256,7 @@ export function resolveReplyRecipients<M extends ReplyAnchorMessage>({
 
     const candidate = candidates[0]
     if (candidate) {
+      if (allowSelf) return { to: [candidate], source: candidateSource }
       return new SelfRecipientError({
         recipient: candidate.email,
         account: selfAddresses[0] ?? candidate.email,
@@ -257,7 +276,7 @@ export function resolveReplyRecipients<M extends ReplyAnchorMessage>({
   if (replyAll) {
     const everyone = [...anchor.to, ...(anchor.cc ?? [])]
     for (const a of everyone) {
-      if (!allowSelf && isSelf(a)) continue
+      if (isSelf(a)) continue
       if (toKeys.has(normalize(a.email))) continue
       cc.push(a)
     }

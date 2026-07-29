@@ -11,12 +11,12 @@ Recipient resolution now lives in one place (`resolveReplyRecipients`) shared by
 - the anchor message is the last **non-draft** message
 - `Reply-To` is parsed as an address list instead of being used as a raw header string, so `Reply-To: Paul <paul@acme.com>` and multi-address `Reply-To` work
 - when the anchor was sent by you, the reply goes to **its recipients**; if it was self-addressed, zele walks back to the last message from someone else
-- send-as aliases count as you; plus-aliases (`you+tag@`) deliberately do not
+- send-as aliases and plus-tagged variants count as you; Gmail dotted variants do too
 
 New flags on `zele mail reply`:
 
 ```bash
-zele mail reply <thread-id> --dry-run                      # print to/cc/subject/In-Reply-To, send nothing
+zele mail reply <thread-id> --dry-run                      # print all recipients/sender/threading headers, send nothing
 zele mail reply <thread-id> --to paul@acme.com --body "…"  # override the inferred recipient
 zele mail reply <thread-id> --bcc ops@acme.com --body "…"
 zele mail reply <thread-id> --allow-self --body "…"        # deliberate note to self

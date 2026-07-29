@@ -603,7 +603,11 @@ export class GmailClient {
       return new EmptyThreadError({ threadId })
     }
 
-    const selfAddresses = await this.getSelfAddresses()
+    // An explicit recipient without reply-all needs no inference, so an
+    // unrelated alias-settings outage must not block the override.
+    const selfAddresses = to && to.length > 0 && !replyAll
+      ? []
+      : await this.getSelfAddresses()
     if (selfAddresses instanceof Error) return selfAddresses
 
     const resolution = resolveReplyRecipients({
@@ -692,6 +696,7 @@ export class GmailClient {
       message: result,
       to: envelope.to.map((r) => r.email),
       cc: (envelope.cc ?? []).map((r) => r.email),
+      bcc: (bcc ?? []).map((r) => r.email),
       recipientSource: envelope.source,
     }
   }
@@ -980,6 +985,7 @@ export class GmailClient {
       message: res.data,
       to: envelope.to.map((r) => r.email),
       cc: (envelope.cc ?? []).map((r) => r.email),
+      bcc: (bcc ?? []).map((r) => r.email),
       recipientSource: envelope.source,
     }
   }
@@ -1802,15 +1808,14 @@ export class GmailClient {
       { email: primaryEmail, primary: true },
     ]
 
-    // Boundary: sendAs.list — auth errors propagate; permission-denied is expected
-    // (some accounts lack Gmail settings access) and yields primary email only.
+    // Alias discovery is part of reply safety. If it fails, fail closed rather
+    // than treating a send-as alias as an external sender and mailing it.
     const settings = await gmailBoundary(this.account?.email ?? 'unknown', () =>
       withRetry(() =>
         this.gmail.users.settings.sendAs.list({ userId: 'me' }),
       ),
     )
-    if (settings instanceof AuthError) return settings
-    if (settings instanceof Error) return aliases // permission denied — return primary only
+    if (settings instanceof Error) return settings
 
     for (const alias of settings.data.sendAs ?? []) {
       if (alias.isPrimary && alias.sendAsEmail === primaryEmail) continue

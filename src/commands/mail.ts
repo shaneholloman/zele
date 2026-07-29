@@ -304,9 +304,10 @@ export function registerMailCommands(cli: ZeleCli) {
         return
       }
 
-      // Fetch all threads concurrently, tolerating individual failures.
-      // getThread returns errors as values, so a bad thread id does not abort the batch.
-      const settled = await Promise.all(
+      // Client API calls return errors as values, but local cache/database work
+      // can still reject. Keep each read isolated so one failure cannot abort
+      // a multi-thread command.
+      const settled = await Promise.allSettled(
         threadIds.map((id) => client.getThread({ threadId: id })),
       )
 
@@ -325,13 +326,19 @@ export function registerMailCommands(cli: ZeleCli) {
           console.log()
         }
 
-        if (result instanceof Error) {
-          out.error(`Failed to read thread ${threadIds[i]}: ${result.message}`)
+        if (result.status === 'rejected') {
+          out.error(`Failed to read thread ${threadIds[i]}: ${String(result.reason)}`)
           if (multi) console.log()
           continue
         }
 
-        const thread = result.parsed
+        if (result.value instanceof Error) {
+          out.error(`Failed to read thread ${threadIds[i]}: ${result.value.message}`)
+          if (multi) console.log()
+          continue
+        }
+
+        const thread = result.value.parsed
 
         if (thread.messages.length === 0) {
           out.hint('No messages in thread')
@@ -492,6 +499,7 @@ export function registerMailCommands(cli: ZeleCli) {
           ...result.message,
           to: result.to,
           cc: result.cc,
+          bcc: result.bcc,
           recipient_source: result.recipientSource,
         })
         out.success(`Sent to ${result.to.join(', ')} in thread ${options.threadId}`)
@@ -555,6 +563,8 @@ export function registerMailCommands(cli: ZeleCli) {
         out.printYaml({
           to: envelope.to.map((r) => r.email),
           cc: (envelope.cc ?? []).map((r) => r.email),
+          bcc: parseEmailList(options.bcc)?.map((r) => r.email) ?? [],
+          from: options.from ?? null,
           subject: replySubject(envelope.anchorSubject),
           in_reply_to: envelope.inReplyTo ?? null,
           references: envelope.references ?? null,
@@ -614,6 +624,7 @@ export function registerMailCommands(cli: ZeleCli) {
           ...result.message,
           to: result.to,
           cc: result.cc,
+          bcc: result.bcc,
           recipient_source: result.recipientSource,
         })
         out.success(`Reply draft created for ${result.to.join(', ')}`)
@@ -637,6 +648,7 @@ export function registerMailCommands(cli: ZeleCli) {
         ...result.message,
         to: result.to,
         cc: result.cc,
+        bcc: result.bcc,
         recipient_source: result.recipientSource,
       })
       out.success(`Reply sent to ${result.to.join(', ')}`)

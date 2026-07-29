@@ -41,6 +41,11 @@ function makeThreadId(folder: string, uid: number): string {
   return `${folder}:${uid}`
 }
 
+function isSentFolder(folder: string): boolean {
+  const normalized = folder.toLowerCase()
+  return (FOLDER_FALLBACKS.sent ?? []).some((candidate) => candidate.toLowerCase() === normalized)
+}
+
 /** Static fallback map from zele folder names to IMAP folder paths.
  *  Used only when specialUse discovery fails. */
 const FOLDER_FALLBACKS: Record<string, string[]> = {
@@ -429,7 +434,8 @@ export class ImapSmtpClient {
           return new NotFoundError({ resource: `message ${threadId}` })
         }
 
-        const parsed = this.parseImapMessage(message, folder)
+        const isSent = client.mailbox !== false && client.mailbox.specialUse === '\\Sent'
+        const parsed = this.parseImapMessage({ message, folder, isSent })
 
         const threadData: ThreadData = {
           id: threadId,
@@ -622,9 +628,14 @@ export class ImapSmtpClient {
       return new EmptyThreadError({ threadId })
     }
 
+    // IMAP has no portable send-as alias API. A message fetched from Sent is
+    // authoritative evidence that its From address belongs to this account.
+    const sentFromAddresses = messages
+      .filter((message) => message.labelIds.includes('SENT'))
+      .map((message) => message.from.email)
     const resolution = resolveReplyRecipients({
       messages,
-      selfAddresses: [this.account.email],
+      selfAddresses: [this.account.email, ...sentFromAddresses],
       threadId,
       replyAll,
       explicitTo: to,
@@ -692,6 +703,7 @@ export class ImapSmtpClient {
       message: result,
       to: envelope.to.map((r) => r.email),
       cc: (envelope.cc ?? []).map((r) => r.email),
+      bcc: (bcc ?? []).map((r) => r.email),
       recipientSource: envelope.source,
     }
   }
@@ -1003,7 +1015,7 @@ export class ImapSmtpClient {
               flags: true,
               source: true,
             }, { uid: true })) {
-              const parsed = this.parseImapMessage(msg, imapFolder)
+              const parsed = this.parseImapMessage({ message: msg, folder: imapFolder })
               events.push({
                 account: this.account,
                 type: 'new_message',
@@ -1284,6 +1296,7 @@ export class ImapSmtpClient {
       message: result,
       to: envelope.to.map((r) => r.email),
       cc: (envelope.cc ?? []).map((r) => r.email),
+      bcc: (bcc ?? []).map((r) => r.email),
       recipientSource: envelope.source,
     }
   }
@@ -1408,8 +1421,17 @@ export class ImapSmtpClient {
     return check(bs)
   }
 
-  /** Parse an imapflow FetchMessageObject into our ParsedMessage type. */
-  private parseImapMessage(msg: FetchMessageObject, folder: string): ParsedMessage {
+  /** Parse an imapflow FetchMessageObject into our ParsedMessage type. Public
+   *  for offline parsing tests; it performs no network or state changes. */
+  parseImapMessage({
+    message: msg,
+    folder,
+    isSent = isSentFolder(folder),
+  }: {
+    message: FetchMessageObject
+    folder: string
+    isSent?: boolean
+  }): ParsedMessage {
     const env = msg.envelope ?? {} as Partial<MessageEnvelopeObject>
     const flags = msg.flags ?? new Set()
     const threadId = makeThreadId(folder, msg.uid)
@@ -1420,6 +1442,7 @@ export class ImapSmtpClient {
     let textBody: string | null = null
     let listUnsubscribe: string | undefined
     let listUnsubscribePost: string | undefined
+    let replyTo: string | undefined
 
     if (msg.source) {
       const source = msg.source.toString('utf-8')
@@ -1437,6 +1460,7 @@ export class ImapSmtpClient {
       const headerText = headerSplit === -1 ? source : source.slice(0, headerSplit)
       listUnsubscribe = this.getHeader(headerText, 'list-unsubscribe')
       listUnsubscribePost = this.getHeader(headerText, 'list-unsubscribe-post')
+      replyTo = this.getHeader(headerText, 'reply-to')
     }
 
     // Extract attachments from bodyStructure
@@ -1454,9 +1478,14 @@ export class ImapSmtpClient {
       to: toSenders(env.to),
       cc: env.cc ? toSenders(env.cc) : null,
       bcc: toSenders(env.bcc),
-      replyTo: env.replyTo?.[0]?.address,
+      replyTo: replyTo ?? (
+        env.replyTo
+          ?.map((address) => address.name ? `"${address.name}" <${address.address}>` : address.address)
+          .filter(Boolean)
+          .join(', ') || undefined
+      ),
       date: env.date?.toISOString() ?? new Date().toISOString(),
-      labelIds: [],
+      labelIds: isSent ? ['SENT'] : [],
       unread: !flags.has('\\Seen'),
       starred: flags.has('\\Flagged'),
       isDraft: flags.has('\\Draft'),

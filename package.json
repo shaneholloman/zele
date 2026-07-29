@@ -68,13 +68,12 @@
     "@types/turndown": "^5.0.5",
     "prisma": "7.3.0",
     "tsx": "^4.19.4",
-    "tuistory": "0.0.16",
+    "tuistory": "^0.10.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
   "trustedDependencies": [
     "@prisma/engines",
-    "node-pty",
     "prisma"
   ],
   "files": [

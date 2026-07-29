@@ -139,7 +139,7 @@ export class SelfRecipientError extends errore.createTaggedError({
  *  was sent by the account itself and no message names an external recipient). */
 export class AmbiguousRecipientError extends errore.createTaggedError({
   name: 'AmbiguousRecipientError',
-  message: 'Cannot infer a reply recipient for thread $threadId: every message is from the account itself. Pass --to <email>.',
+  message: 'Cannot infer a reply recipient for thread $threadId: no replyable external recipient was found. Pass --to <email>.',
 }) {}
 
 /** Returned when a thread has no List-Unsubscribe header (RFC 2369) so no

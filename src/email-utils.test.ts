@@ -6,8 +6,9 @@
 import { OAuth2Client } from 'google-auth-library'
 import { describe, expect, test } from 'vitest'
 import { AmbiguousRecipientError, SelfRecipientError } from './api-utils.js'
-import { resolveReplyRecipients } from './email-utils.js'
+import { resolveReplyRecipients, threadAnchor } from './email-utils.js'
 import { GmailClient } from './gmail-client.js'
+import { ImapSmtpClient } from './imap-smtp-client.js'
 
 const client = new GmailClient({ auth: new OAuth2Client() })
 
@@ -155,6 +156,43 @@ describe('resolveReplyRecipients', () => {
         "source": "from",
         "to": [
           "tommy@unframer.co",
+        ],
+      }
+    `)
+  })
+
+  test('allow-self does not override a resolvable external recipient', () => {
+    const r = resolve([
+      { from: `Paul <${PEER}>`, to: ME },
+      { from: `Me <${ME}>`, to: PEER, labelIds: ['SENT'] },
+    ], { allowSelf: true })
+    expect(summarize(r)).toMatchInlineSnapshot(`
+      {
+        "anchorFrom": "tommy@unframer.co",
+        "anchorMessageId": "<msg-1@mail.example>",
+        "cc": [],
+        "source": "recipients",
+        "to": [
+          "paul@terashift.net",
+        ],
+      }
+    `)
+  })
+
+  test('allow-self never adds my address to inferred reply-all CC', () => {
+    const r = resolve([
+      { from: `Paul <${PEER}>`, to: `${ME}, dana@terashift.net`, cc: ME },
+    ], { allowSelf: true, replyAll: true })
+    expect(summarize(r)).toMatchInlineSnapshot(`
+      {
+        "anchorFrom": "paul@terashift.net",
+        "anchorMessageId": "<msg-0@mail.example>",
+        "cc": [
+          "dana@terashift.net",
+        ],
+        "source": "from",
+        "to": [
+          "paul@terashift.net",
         ],
       }
     `)
@@ -335,7 +373,7 @@ describe('resolveReplyRecipients', () => {
     `)
   })
 
-  test('plus-aliases are NOT treated as me', () => {
+  test('plus-aliases are treated as me by the safety guard', () => {
     const r = resolve([
       { from: `Paul <${PEER}>`, to: ME },
       { from: `Me <${ME}>`, to: 'tommy+prospects@unframer.co', labelIds: ['SENT'] },
@@ -345,10 +383,93 @@ describe('resolveReplyRecipients', () => {
         "anchorFrom": "tommy@unframer.co",
         "anchorMessageId": "<msg-1@mail.example>",
         "cc": [],
-        "source": "recipients",
+        "source": "previous-sender",
         "to": [
-          "tommy+prospects@unframer.co",
+          "paul@terashift.net",
         ],
+      }
+    `)
+  })
+
+  test('Gmail dotted variants are treated as me by the safety guard', () => {
+    const r = resolve([
+      { from: `Paul <${PEER}>`, to: 'tommy.dr@gmail.com' },
+      { from: 'Me <tommy.dr@gmail.com>', to: 't.o.m.m.y.d.r+followup@googlemail.com', labelIds: ['SENT'] },
+    ], { selfAddresses: ['tommydr@gmail.com'] })
+    expect(summarize(r)).toMatchInlineSnapshot(`
+      {
+        "anchorFrom": "tommy.dr@gmail.com",
+        "anchorMessageId": "<msg-1@mail.example>",
+        "cc": [],
+        "source": "previous-sender",
+        "to": [
+          "paul@terashift.net",
+        ],
+      }
+    `)
+  })
+
+  test('draft-only thread has no reply anchor', () => {
+    const parsed = client.parseThread(thread([
+      { from: `Me <${ME}>`, to: PEER, messageId: '', labelIds: ['DRAFT'] },
+    ]) as any)
+    expect(threadAnchor(parsed.messages)).toBeUndefined()
+  })
+
+  test('IMAP preserves every Reply-To address and marks sent messages', () => {
+    const imap = new ImapSmtpClient({
+      credentials: {},
+      account: {
+        email: ME,
+        appId: 'imap_smtp',
+        accountType: 'imap_smtp',
+        capabilities: [],
+      },
+    })
+    const parsed = imap.parseImapMessage({
+      message: {
+        uid: 42,
+        envelope: {
+          from: [{ name: 'Alias', address: 'alias@unframer.co' }],
+          to: [{ name: 'Paul', address: PEER }],
+          replyTo: [
+            { name: 'Paul', address: PEER },
+            { name: 'Sales', address: 'sales@terashift.net' },
+          ],
+          messageId: '<imap-message@example.com>',
+          subject: 'Pricing question',
+        },
+        flags: new Set(),
+      } as any,
+      folder: 'Sent',
+      isSent: true,
+    })
+
+    const r = resolveReplyRecipients({
+      messages: [parsed],
+      selfAddresses: [ME, parsed.from.email],
+      threadId: parsed.threadId,
+    })
+    expect({
+      replyTo: parsed.replyTo,
+      labels: parsed.labelIds,
+      resolved: summarize(r),
+    }).toMatchInlineSnapshot(`
+      {
+        "labels": [
+          "SENT",
+        ],
+        "replyTo": ""Paul" <paul@terashift.net>, "Sales" <sales@terashift.net>",
+        "resolved": {
+          "anchorFrom": "alias@unframer.co",
+          "anchorMessageId": "<imap-message@example.com>",
+          "cc": [],
+          "source": "reply-to",
+          "to": [
+            "paul@terashift.net",
+            "sales@terashift.net",
+          ],
+        },
       }
     `)
   })
