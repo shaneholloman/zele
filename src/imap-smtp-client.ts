@@ -10,7 +10,8 @@ import { ImapFlow, type FetchMessageObject, type MessageEnvelopeObject, type Mai
 import type { Transporter } from 'nodemailer'
 import { createMimeMessage } from 'mimetext'
 import * as errore from 'errore'
-import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
+import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, SelfRecipientError, AmbiguousRecipientError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
+import { resolveReplyRecipients, replySubject, threadAnchor, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import { renderEmailBody } from './output.js'
 import type { AccountId, ImapSmtpCredentials, ImapCredentials, SmtpCredentials } from './auth.js'
 import type {
@@ -406,7 +407,7 @@ export class ImapSmtpClient {
     }) as Promise<ThreadListResult | AuthError | ApiError>
   }
 
-  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult> {
+  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult | NotFoundError | AuthError | ApiError> {
     const { folder, uid } = parseThreadId(threadId)
 
     const result = await this.withImap(async (client) => {
@@ -449,15 +450,13 @@ export class ImapSmtpClient {
       }
     })
 
-    // getThread is expected to throw on failure (same as GmailClient)
-    // because callers like mail read destructure the result directly.
-    if (result instanceof Error) throw result
-    return result as ThreadResult
+    return result as ThreadResult | NotFoundError | AuthError | ApiError
   }
 
-  async getMessage({ messageId }: { messageId: string }): Promise<ParsedMessage | AuthError | ApiError> {
+  async getMessage({ messageId }: { messageId: string }): Promise<ParsedMessage | NotFoundError | AuthError | ApiError> {
     // For IMAP, messageId is the same as threadId
     const result = await this.getThread({ threadId: messageId })
+    if (result instanceof Error) return result
     return result.parsed.messages[0]!
   }
 
@@ -501,7 +500,7 @@ export class ImapSmtpClient {
     body: string
     cc?: Array<{ name?: string; email: string }>
     bcc?: Array<{ name?: string; email: string }>
-    threadId?: string
+    /** IMAP has no server-side thread id; threading is carried by In-Reply-To/References. */
     inReplyTo?: string
     references?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
@@ -593,60 +592,108 @@ export class ImapSmtpClient {
     }
   }
 
-  async replyToThread({
+  /**
+   * Resolve recipients + threading headers for a message sent into an existing
+   * thread. Mirrors GmailClient.resolveThreadReply; recipient inference itself
+   * lives in resolveReplyRecipients so both clients behave identically.
+   *
+   * Note: for IMAP a "thread" is a single message (folder:uid), so the anchor is
+   * always that message. Replying to something in Sent would therefore target
+   * yourself under the naive rule — the resolver falls back to its To: instead.
+   */
+  async resolveThreadReply({
+    threadId,
+    to,
+    cc,
+    replyAll = false,
+    allowSelf = false,
+  }: {
+    threadId: string
+    to?: Array<{ name?: string; email: string }>
+    cc?: Array<{ name?: string; email: string }>
+    replyAll?: boolean
+    allowSelf?: boolean
+  }): Promise<ThreadReplyEnvelope | EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | NotFoundError | AuthError | ApiError> {
+    const thread = await this.getThread({ threadId })
+    if (thread instanceof Error) return thread
+
+    const messages = thread.parsed.messages
+    if (messages.length === 0) {
+      return new EmptyThreadError({ threadId })
+    }
+
+    const resolution = resolveReplyRecipients({
+      messages,
+      selfAddresses: [this.account.email],
+      threadId,
+      replyAll,
+      explicitTo: to,
+      extraCc: cc,
+      allowSelf,
+    })
+    if (resolution instanceof Error) return resolution
+
+    const { anchor } = resolution
+    const references = [anchor.references, anchor.messageId].filter(Boolean).join(' ')
+
+    return {
+      to: resolution.to,
+      cc: resolution.cc.length > 0 ? resolution.cc : undefined,
+      anchorSubject: anchor.subject,
+      inReplyTo: anchor.messageId || undefined,
+      references: references || undefined,
+      source: resolution.source,
+    }
+  }
+
+  /**
+   * Send a message into an existing thread. IMAP has no server-side thread id,
+   * so threading is carried entirely by In-Reply-To/References headers, which is
+   * what every standards-compliant client uses to group messages.
+   */
+  async sendInThread({
     threadId,
     body,
-    replyAll = false,
+    to,
+    subject,
     cc,
-    fromEmail,
+    bcc,
+    replyAll = false,
+    allowSelf = false,
     attachments,
   }: {
     threadId: string
     body: string
+    to?: Array<{ name?: string; email: string }>
+    subject?: string
+    cc?: Array<{ name?: string; email: string }>
+    bcc?: Array<{ name?: string; email: string }>
     replyAll?: boolean
-    cc?: Array<{ email: string }>
+    allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | UnsupportedError | AuthError | ApiError | { id: string; threadId: string; labelIds: string[] }> {
-    const thread = await this.getThread({ threadId })
-    if (thread.parsed.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | NotFoundError | UnsupportedError | AuthError | ApiError | SentInThread<{ id: string; threadId: string; labelIds: string[] }>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    if (envelope instanceof Error) return envelope
 
-    const lastMsg = thread.parsed.messages[thread.parsed.messages.length - 1]!
-    const replyTo = lastMsg.replyTo ?? lastMsg.from.email
-    const to = [{ email: replyTo }]
-
-    let resolvedCc: Array<{ email: string }> | undefined
-    if (replyAll) {
-      const myEmail = this.account.email.toLowerCase()
-      const allRecipients = [
-        ...lastMsg.to.map((r) => r.email),
-        ...(lastMsg.cc?.map((r) => r.email) ?? []),
-      ]
-        .filter((e) => e.toLowerCase() !== myEmail)
-        .filter((e) => e.toLowerCase() !== replyTo.toLowerCase())
-
-      if (allRecipients.length > 0) {
-        resolvedCc = allRecipients.map((e) => ({ email: e }))
-      }
-    }
-
-    if (cc) {
-      resolvedCc = [...(resolvedCc ?? []), ...cc]
-    }
-
-    const refs = [lastMsg.references, lastMsg.messageId].filter(Boolean).join(' ')
-
-    return this.sendMessage({
-      to,
-      subject: lastMsg.subject.startsWith('Re:') ? lastMsg.subject : `Re: ${lastMsg.subject}`,
+    const result = await this.sendMessage({
+      to: envelope.to,
+      subject: subject ?? replySubject(envelope.anchorSubject),
       body,
-      cc: resolvedCc,
-      inReplyTo: lastMsg.messageId,
-      references: refs || undefined,
+      cc: envelope.cc,
+      bcc,
+      inReplyTo: envelope.inReplyTo,
+      references: envelope.references,
       attachments,
     })
+    if (result instanceof Error) return result
+
+    return {
+      message: result,
+      to: envelope.to.map((r) => r.email),
+      cc: (envelope.cc ?? []).map((r) => r.email),
+      recipientSource: envelope.source,
+    }
   }
 
   async forwardThread({
@@ -659,13 +706,13 @@ export class ImapSmtpClient {
     to: Array<{ email: string }>
     body?: string
     fromEmail?: string
-  }): Promise<EmptyThreadError | UnsupportedError | AuthError | ApiError | { id: string; threadId: string; labelIds: string[] }> {
+  }): Promise<EmptyThreadError | NotFoundError | UnsupportedError | AuthError | ApiError | { id: string; threadId: string; labelIds: string[] }> {
     const thread = await this.getThread({ threadId })
-    if (thread.parsed.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
+    if (thread instanceof Error) return thread
 
-    const lastMsg = thread.parsed.messages[thread.parsed.messages.length - 1]!
+    const lastMsg = threadAnchor(thread.parsed.messages)
+    if (!lastMsg) return new EmptyThreadError({ threadId })
+
     const renderedBody = renderEmailBody(lastMsg.body, lastMsg.mimeType)
 
     const fromStr = lastMsg.from.name && lastMsg.from.name !== lastMsg.from.email
@@ -1088,6 +1135,7 @@ export class ImapSmtpClient {
   async getDraft({ draftId }: { draftId: string }) {
     // Reuse getThread to fetch the full message from Drafts folder
     const result = await this.getThread({ threadId: draftId })
+    if (result instanceof Error) return result
     const msg = result.parsed.messages[0]!
     return {
       id: draftId,
@@ -1101,6 +1149,7 @@ export class ImapSmtpClient {
   async sendDraft({ draftId }: { draftId: string }) {
     // Fetch the draft message, send it via SMTP, then delete the draft
     const draft = await this.getDraft({ draftId })
+    if (draft instanceof Error) return draft
 
     const result = await this.sendMessage({
       to: draft.to,
@@ -1168,63 +1217,44 @@ export class ImapSmtpClient {
   async createDraftReply({
     threadId,
     body,
+    to,
     replyAll = false,
     cc,
+    bcc,
+    allowSelf = false,
     fromEmail,
     attachments,
   }: {
     threadId: string
     body: string
+    to?: Array<{ name?: string; email: string }>
     replyAll?: boolean
-    cc?: Array<{ email: string }>
+    cc?: Array<{ name?: string; email: string }>
+    bcc?: Array<{ name?: string; email: string }>
+    allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | AuthError | ApiError | { id: string; message: { id: string }; threadId: string }> {
-    const thread = await this.getThread({ threadId })
-    if (thread.parsed.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
-
-    const lastMsg = thread.parsed.messages[thread.parsed.messages.length - 1]!
-    const replyTo = lastMsg.replyTo ?? lastMsg.from.email
-    const to = [{ email: replyTo }]
-
-    let resolvedCc: Array<{ email: string }> | undefined
-    if (replyAll) {
-      const myEmail = this.account.email.toLowerCase()
-      const allRecipients = [
-        ...lastMsg.to.map((r) => r.email),
-        ...(lastMsg.cc?.map((r) => r.email) ?? []),
-      ]
-        .filter((e) => e.toLowerCase() !== myEmail)
-        .filter((e) => e.toLowerCase() !== replyTo.toLowerCase())
-
-      if (allRecipients.length > 0) {
-        resolvedCc = allRecipients.map((e) => ({ email: e }))
-      }
-    }
-
-    if (cc) {
-      resolvedCc = [...(resolvedCc ?? []), ...cc]
-    }
-
-    const refs = [lastMsg.references, lastMsg.messageId].filter(Boolean).join(' ')
-    const subject = lastMsg.subject.startsWith('Re:') ? lastMsg.subject : `Re: ${lastMsg.subject}`
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | NotFoundError | AuthError | ApiError | SentInThread<{ id: string; message: { id: string }; threadId: string }>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    if (envelope instanceof Error) return envelope
 
     // Build MIME with reply headers using mimetext (already used elsewhere in this client)
     const msg = createMimeMessage()
     msg.setSender(fromEmail ?? this.account.email)
-    msg.setRecipients(to.map((r) => ({ name: '', addr: r.email })))
-    msg.setSubject(subject)
-    if (resolvedCc && resolvedCc.length > 0) {
-      msg.setCc(resolvedCc.map((r) => ({ name: '', addr: r.email })))
+    msg.setRecipients(envelope.to.map((r) => ({ name: r.name ?? '', addr: r.email })))
+    msg.setSubject(replySubject(envelope.anchorSubject))
+    if (envelope.cc && envelope.cc.length > 0) {
+      msg.setCc(envelope.cc.map((r) => ({ name: r.name ?? '', addr: r.email })))
+    }
+    if (bcc && bcc.length > 0) {
+      msg.setBcc(bcc.map((r) => ({ name: r.name ?? '', addr: r.email })))
     }
     msg.addMessage({ contentType: 'text/plain', data: body })
-    if (lastMsg.messageId) {
-      msg.setHeader('In-Reply-To', lastMsg.messageId)
+    if (envelope.inReplyTo) {
+      msg.setHeader('In-Reply-To', envelope.inReplyTo)
     }
-    if (refs) {
-      msg.setHeader('References', refs)
+    if (envelope.references) {
+      msg.setHeader('References', envelope.references)
     }
     if (attachments) {
       for (const att of attachments) {
@@ -1249,7 +1279,13 @@ export class ImapSmtpClient {
       }
     })
     if (result instanceof Error) return result
-    return result
+
+    return {
+      message: result,
+      to: envelope.to.map((r) => r.email),
+      cc: (envelope.cc ?? []).map((r) => r.email),
+      recipientSource: envelope.source,
+    }
   }
 
   /**
@@ -1266,13 +1302,13 @@ export class ImapSmtpClient {
     to: Array<{ email: string }>
     body?: string
     fromEmail?: string
-  }): Promise<EmptyThreadError | AuthError | ApiError | { id: string; message: { id: string }; threadId: string }> {
+  }): Promise<EmptyThreadError | NotFoundError | AuthError | ApiError | { id: string; message: { id: string }; threadId: string }> {
     const thread = await this.getThread({ threadId })
-    if (thread.parsed.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
+    if (thread instanceof Error) return thread
 
-    const lastMsg = thread.parsed.messages[thread.parsed.messages.length - 1]!
+    const lastMsg = threadAnchor(thread.parsed.messages)
+    if (!lastMsg) return new EmptyThreadError({ threadId })
+
     const renderedBody = renderEmailBody(lastMsg.body, lastMsg.mimeType)
 
     const fromStr = lastMsg.from.name && lastMsg.from.name !== lastMsg.from.email

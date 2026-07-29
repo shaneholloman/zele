@@ -10,6 +10,7 @@ import path from 'node:path'
 import React from 'react'
 import { lookup as mimeLookup } from 'mrmime'
 import { getClients, getClient, listAccounts, login } from '../auth.js'
+import { replySubject } from '../email-utils.js'
 import type { ThreadListResult } from '../gmail-client.js'
 import type { GmailClient } from '../gmail-client.js'
 import { AuthError } from '../api-utils.js'
@@ -33,6 +34,19 @@ function formatLabels(labelIds: string[], labelMap?: Map<string, string>): strin
     .filter((id) => !HIDDEN_LABELS.has(id))
     .map((id) => labelMap?.get(id) ?? id)
   return visible.join(', ')
+}
+
+/** Parse a comma-separated CLI address option into recipient objects.
+ *  Returns undefined for empty/missing input so callers can distinguish
+ *  "not provided" (infer it) from "provided but empty". */
+function parseEmailList(value?: string): Array<{ email: string }> | undefined {
+  if (!value) return undefined
+  const parsed = value
+    .split(',')
+    .map((e) => e.trim())
+    .filter(Boolean)
+    .map((email) => ({ email }))
+  return parsed.length > 0 ? parsed : undefined
 }
 
 function resolveAttachments(filePaths?: string[]) {
@@ -277,7 +291,9 @@ export function registerMailCommands(cli: ZeleCli) {
           out.error('--raw only supports a single thread ID')
           process.exit(1)
         }
-        const { parsed: thread } = await client.getThread({ threadId: threadIds[0]! })
+        const threadResult = await client.getThread({ threadId: threadIds[0]! })
+        if (threadResult instanceof Error) handleCommandError(threadResult)
+        const thread = threadResult.parsed
         if (thread.messages.length === 0) {
           out.hint('No messages in thread')
           return
@@ -288,8 +304,9 @@ export function registerMailCommands(cli: ZeleCli) {
         return
       }
 
-      // Fetch all threads concurrently, tolerating individual failures
-      const settled = await Promise.allSettled(
+      // Fetch all threads concurrently, tolerating individual failures.
+      // getThread returns errors as values, so a bad thread id does not abort the batch.
+      const settled = await Promise.all(
         threadIds.map((id) => client.getThread({ threadId: id })),
       )
 
@@ -308,13 +325,13 @@ export function registerMailCommands(cli: ZeleCli) {
           console.log()
         }
 
-        if (result.status === 'rejected') {
-          out.error(`Failed to read thread ${threadIds[i]}: ${String(result.reason)}`)
+        if (result instanceof Error) {
+          out.error(`Failed to read thread ${threadIds[i]}: ${result.message}`)
           if (multi) console.log()
           continue
         }
 
-        const { parsed: thread } = result.value
+        const thread = result.parsed
 
         if (thread.messages.length === 0) {
           out.hint('No messages in thread')
@@ -411,14 +428,18 @@ export function registerMailCommands(cli: ZeleCli) {
     .option('--body-file <bodyFile>', z.string().describe('Read body from file (use - for stdin)'))
     .option('--cc <cc>', z.string().describe('CC recipients (comma-separated)'))
     .option('--bcc <bcc>', z.string().describe('BCC recipients (comma-separated)'))
+    .option('--thread-id <threadId>', z.string().describe('Send into an existing thread (sets In-Reply-To/References)'))
+    .option('--all', 'With --thread-id: CC the other thread participants')
+    .option('--allow-self', 'With --thread-id: allow sending to your own address')
     .option('--from <from>', z.string().describe('Send-as alias email'))
     .option('--attach <attach>', z.array(z.string()).describe('File to attach (repeatable: --attach a.pdf --attach b.png)'))
     .action(async (options) => {
-      if (!options.to) {
+      // With --thread-id both --to and --subject are inferred from the thread.
+      if (!options.to && !options.threadId) {
         out.error('--to is required')
         process.exit(1)
       }
-      if (!options.subject) {
+      if (!options.subject && !options.threadId) {
         out.error('--subject is required')
         process.exit(1)
       }
@@ -443,17 +464,55 @@ export function registerMailCommands(cli: ZeleCli) {
 
       const attachments = resolveAttachments(options.attach)
 
-      const parseEmails = (str: string) =>
-        str.split(',').map((e) => e.trim()).filter(Boolean).map((email) => ({ email }))
+      const to = parseEmailList(options.to)
+      const cc = parseEmailList(options.cc)
+      const bcc = parseEmailList(options.bcc)
 
       const { client } = await getClient(options.account)
 
+      // --thread-id sends into an existing conversation: recipients default to
+      // the thread's counterparty and the In-Reply-To/References headers (plus
+      // Gmail's threadId) are derived from it, so the message actually threads.
+      if (options.threadId) {
+        const result = await client.sendInThread({
+          threadId: options.threadId,
+          to,
+          subject: options.subject,
+          body,
+          cc,
+          bcc,
+          replyAll: options.all,
+          allowSelf: options.allowSelf,
+          fromEmail: options.from,
+          attachments,
+        })
+        if (result instanceof Error) handleCommandError(result)
+
+        out.printYaml({
+          ...result.message,
+          to: result.to,
+          cc: result.cc,
+          recipient_source: result.recipientSource,
+        })
+        out.success(`Sent to ${result.to.join(', ')} in thread ${options.threadId}`)
+        return
+      }
+
+      if (!to) {
+        out.error('--to must contain at least one email address')
+        process.exit(1)
+      }
+      if (!options.subject) {
+        out.error('--subject is required')
+        process.exit(1)
+      }
+
       const result = await client.sendMessage({
-        to: parseEmails(options.to),
+        to,
         subject: options.subject,
         body,
-        cc: options.cc ? parseEmails(options.cc) : undefined,
-        bcc: options.bcc ? parseEmails(options.bcc) : undefined,
+        cc,
+        bcc,
         fromEmail: options.from,
         attachments,
       })
@@ -471,12 +530,40 @@ export function registerMailCommands(cli: ZeleCli) {
     .command('mail reply <threadId>', 'Reply to an email thread')
     .option('--body <body>', z.string().describe('Reply body text'))
     .option('--body-file <bodyFile>', z.string().describe('Read body from file (use - for stdin)'))
+    .option('--to <to>', z.string().describe('Override the inferred recipient(s), comma-separated'))
     .option('--cc <cc>', z.string().describe('Additional CC recipients'))
+    .option('--bcc <bcc>', z.string().describe('BCC recipients (comma-separated)'))
     .option('--all', 'Reply all (include all original recipients)')
+    .option('--allow-self', 'Allow replying to your own address (normally refused)')
     .option('--from <from>', z.string().describe('Send-as alias email'))
     .option('--attach <attach>', z.array(z.string()).describe('File to attach (repeatable: --attach a.pdf --attach b.png)'))
     .option('--draft', 'Save as draft instead of sending')
+    .option('--dry-run', 'Print the resolved recipients and headers without sending')
     .action(async (threadId, options) => {
+      // --dry-run answers "who would this reply go to?" before committing to send.
+      if (options.dryRun) {
+        const { client } = await getClient(options.account)
+        const envelope = await client.resolveThreadReply({
+          threadId,
+          to: parseEmailList(options.to),
+          cc: parseEmailList(options.cc),
+          replyAll: options.all,
+          allowSelf: options.allowSelf,
+        })
+        if (envelope instanceof Error) handleCommandError(envelope)
+
+        out.printYaml({
+          to: envelope.to.map((r) => r.email),
+          cc: (envelope.cc ?? []).map((r) => r.email),
+          subject: replySubject(envelope.anchorSubject),
+          in_reply_to: envelope.inReplyTo ?? null,
+          references: envelope.references ?? null,
+          recipient_source: envelope.source,
+        })
+        out.hint('Dry run — nothing was sent')
+        return
+      }
+
       let body = options.body ?? ''
       if (options.bodyFile) {
         if (options.bodyFile === '-') {
@@ -497,40 +584,62 @@ export function registerMailCommands(cli: ZeleCli) {
 
       const attachments = resolveAttachments(options.attach)
 
-      const { client } = await getClient(options.account)
+      const { client, email: accountEmail } = await getClient(options.account)
 
-      const cc = options.cc
-        ? options.cc.split(',').map((e: string) => ({ email: e.trim() })).filter((e: { email: string }) => e.email)
-        : undefined
+      const to = parseEmailList(options.to)
+      const cc = parseEmailList(options.cc)
+      const bcc = parseEmailList(options.bcc)
+
+      // Explicit --to is always honored, but mailing only yourself is nearly
+      // always a mistake, so say so out loud instead of silently doing it.
+      if (to && to.every((r) => r.email.toLowerCase() === accountEmail.toLowerCase())) {
+        out.hint(`Recipient is your own address (${accountEmail})`)
+      }
 
       if (options.draft) {
         const result = await client.createDraftReply({
           threadId,
           body,
+          to,
           replyAll: options.all,
           cc,
+          bcc,
+          allowSelf: options.allowSelf,
           fromEmail: options.from,
           attachments,
         })
         if (result instanceof Error) handleCommandError(result)
 
-        out.printYaml(result)
-        out.success('Reply draft created')
+        out.printYaml({
+          ...result.message,
+          to: result.to,
+          cc: result.cc,
+          recipient_source: result.recipientSource,
+        })
+        out.success(`Reply draft created for ${result.to.join(', ')}`)
         return
       }
 
-      const result = await client.replyToThread({
+      const result = await client.sendInThread({
         threadId,
         body,
+        to,
         replyAll: options.all,
         cc,
+        bcc,
+        allowSelf: options.allowSelf,
         fromEmail: options.from,
         attachments,
       })
       if (result instanceof Error) handleCommandError(result)
 
-      out.printYaml(result)
-      out.success('Reply sent')
+      out.printYaml({
+        ...result.message,
+        to: result.to,
+        cc: result.cc,
+        recipient_source: result.recipientSource,
+      })
+      out.success(`Reply sent to ${result.to.join(', ')}`)
     })
 
   // =========================================================================

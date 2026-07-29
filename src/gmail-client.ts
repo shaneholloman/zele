@@ -11,9 +11,9 @@
 import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail'
 import type { OAuth2Client } from 'google-auth-library'
 import { createMimeMessage } from 'mimetext'
-import { parseFrom, parseAddressList } from './email-utils.js'
+import { parseFrom, parseAddressList, resolveReplyRecipients, replySubject, threadAnchor, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import * as errore from 'errore'
-import { withRetry, mapConcurrent, AuthError, isAuthLikeError, ApiError, NotFoundError, EmptyThreadError, MissingDataError, abortableSleep } from './api-utils.js'
+import { withRetry, mapConcurrent, AuthError, isAuthLikeError, ApiError, NotFoundError, EmptyThreadError, MissingDataError, abortableSleep, SelfRecipientError, AmbiguousRecipientError } from './api-utils.js'
 import { renderEmailBody } from './output.js'
 import { getPrisma } from './db.js'
 import type { AccountId } from './auth.js'
@@ -442,20 +442,23 @@ export class GmailClient {
     return result
   }
 
-  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult> {
+  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult | AuthError | ApiError> {
     // Check cache
     const cached = await this.getCachedThread(threadId)
     if (cached) {
       return { parsed: this.parseThread(cached), raw: cached }
     }
 
-    const res = await withRetry(() =>
-      this.gmail.users.threads.get({
-        userId: 'me',
-        id: threadId,
-        format: 'full',
-      }),
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.threads.get({
+          userId: 'me',
+          id: threadId,
+          format: 'full',
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
     const parsed = this.parseThread(res.data)
     const result: ThreadResult = { parsed, raw: res.data }
@@ -549,15 +552,18 @@ export class GmailClient {
       fromEmail,
     })
 
-    const res = await withRetry(() =>
-      this.gmail.users.messages.send({
-        userId: 'me',
-        requestBody: {
-          raw,
-          threadId,
-        },
-      }),
+    const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
+      withRetry(() =>
+        this.gmail.users.messages.send({
+          userId: 'me',
+          requestBody: {
+            raw,
+            threadId,
+          },
+        }),
+      ),
     )
+    if (res instanceof Error) return res
 
     return res.data
   }
@@ -567,73 +573,127 @@ export class GmailClient {
   // =========================================================================
 
   /**
-   * Reply to a thread. Handles reply-to resolution, reply-all CC computation,
-   * References/In-Reply-To headers, and subject prefixing.
+   * Resolve everything needed to compose a message inside an existing thread:
+   * recipients (see resolveReplyRecipients), Cc, and the In-Reply-To/References
+   * headers taken from the same anchor message.
+   *
+   * This is the single place recipient inference happens — sendInThread and
+   * createDraftReply both go through it. Do not reintroduce
+   * "reply to the sender of the last message" anywhere: that mails you back
+   * whenever the last message in the thread is one you sent.
    */
-  async replyToThread({
+  async resolveThreadReply({
+    threadId,
+    to,
+    cc,
+    replyAll = false,
+    allowSelf = false,
+  }: {
+    threadId: string
+    to?: Array<{ name?: string; email: string }>
+    cc?: Array<{ name?: string; email: string }>
+    replyAll?: boolean
+    allowSelf?: boolean
+  }): Promise<ThreadReplyEnvelope | EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | AuthError | ApiError> {
+    const thread = await this.getThread({ threadId })
+    if (thread instanceof Error) return thread
+
+    const messages = thread.parsed.messages
+    if (messages.length === 0) {
+      return new EmptyThreadError({ threadId })
+    }
+
+    const selfAddresses = await this.getSelfAddresses()
+    if (selfAddresses instanceof Error) return selfAddresses
+
+    const resolution = resolveReplyRecipients({
+      messages,
+      selfAddresses,
+      threadId,
+      replyAll,
+      explicitTo: to,
+      extraCc: cc,
+      allowSelf,
+    })
+    if (resolution instanceof Error) return resolution
+
+    const { anchor } = resolution
+    const references = [anchor.references, anchor.messageId].filter(Boolean).join(' ')
+
+    return {
+      to: resolution.to,
+      cc: resolution.cc.length > 0 ? resolution.cc : undefined,
+      anchorSubject: anchor.subject,
+      inReplyTo: anchor.messageId || undefined,
+      references: references || undefined,
+      source: resolution.source,
+    }
+  }
+
+  /** Account address plus send-as aliases, used to detect "this is me" when replying.
+   *  Falls back to the primary address when Gmail settings access is unavailable. */
+  private async getSelfAddresses(): Promise<string[] | AuthError | ApiError> {
+    const aliases = await this.getEmailAliases()
+    if (aliases instanceof Error) return aliases
+    return aliases.map((a) => a.email).filter(Boolean)
+  }
+
+  /**
+   * Send a message into an existing thread with correct threading headers.
+   * Recipients are inferred from the thread unless `to` is given; `subject`
+   * defaults to the thread subject prefixed with "Re:".
+   *
+   * This is also how replies are sent — a reply is just a message in a thread
+   * with an inferred recipient and subject.
+   */
+  async sendInThread({
     threadId,
     body,
-    replyAll = false,
+    to,
+    subject,
     cc,
+    bcc,
+    replyAll = false,
+    allowSelf = false,
     fromEmail,
     attachments,
   }: {
     threadId: string
     body: string
+    to?: Array<{ name?: string; email: string }>
+    subject?: string
+    cc?: Array<{ name?: string; email: string }>
+    bcc?: Array<{ name?: string; email: string }>
     replyAll?: boolean
-    cc?: Array<{ email: string }>
+    allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Message> {
-    const { parsed: thread } = await this.getThread({ threadId })
-    if (thread.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
-
-    const lastMsg = thread.messages[thread.messages.length - 1]!
-
-    const replyTo = lastMsg.replyTo ?? lastMsg.from.email
-    const to = [{ email: replyTo }]
-
-    let resolvedCc: Array<{ email: string }> | undefined
-    if (replyAll) {
-      const profile = await this.getProfile()
-      if (profile instanceof Error) return profile
-      const myEmail = profile.emailAddress.toLowerCase()
-
-      const allRecipients = [
-        ...lastMsg.to.map((r) => r.email),
-        ...(lastMsg.cc?.map((r) => r.email) ?? []),
-      ]
-        .filter((e) => e.toLowerCase() !== myEmail)
-        .filter((e) => e.toLowerCase() !== replyTo.toLowerCase())
-
-      if (allRecipients.length > 0) {
-        resolvedCc = allRecipients.map((e) => ({ email: e }))
-      }
-    }
-
-    if (cc) {
-      resolvedCc = [...(resolvedCc ?? []), ...cc]
-    }
-
-    const refs = [lastMsg.references, lastMsg.messageId].filter(Boolean).join(' ')
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | AuthError | ApiError | SentInThread<gmail_v1.Schema$Message>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    if (envelope instanceof Error) return envelope
 
     const result = await this.sendMessage({
-      to,
-      subject: lastMsg.subject.startsWith('Re:') ? lastMsg.subject : `Re: ${lastMsg.subject}`,
+      to: envelope.to,
+      subject: subject ?? replySubject(envelope.anchorSubject),
       body,
-      cc: resolvedCc,
+      cc: envelope.cc,
+      bcc,
       threadId,
-      inReplyTo: lastMsg.messageId,
-      references: refs || undefined,
+      inReplyTo: envelope.inReplyTo,
+      references: envelope.references,
       fromEmail,
       attachments,
     })
+    if (result instanceof Error) return result
 
     await this.invalidateThread(threadId)
 
-    return result
+    return {
+      message: result,
+      to: envelope.to.map((r) => r.email),
+      cc: (envelope.cc ?? []).map((r) => r.email),
+      recipientSource: envelope.source,
+    }
   }
 
   /**
@@ -650,13 +710,13 @@ export class GmailClient {
     to: Array<{ email: string }>
     body?: string
     fromEmail?: string
-  }): Promise<EmptyThreadError | gmail_v1.Schema$Message> {
-    const { parsed: thread } = await this.getThread({ threadId })
-    if (thread.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
+  }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Message> {
+    const thread = await this.getThread({ threadId })
+    if (thread instanceof Error) return thread
 
-    const lastMsg = thread.messages[thread.messages.length - 1]!
+    const lastMsg = threadAnchor(thread.parsed.messages)
+    if (!lastMsg) return new EmptyThreadError({ threadId })
+
     const renderedBody = renderEmailBody(lastMsg.body, lastMsg.mimeType)
 
     const fromStr = lastMsg.from.name && lastMsg.from.name !== lastMsg.from.email
@@ -864,66 +924,42 @@ export class GmailClient {
   }
 
   /**
-   * Create a draft reply to a thread. Reuses the same reply-to resolution,
-   * reply-all CC computation, and In-Reply-To/References header logic as
-   * replyToThread(), but saves as a draft instead of sending.
+   * Create a draft reply to a thread. Shares recipient resolution and
+   * In-Reply-To/References header logic with sendInThread(), but saves the
+   * message as a draft instead of sending it.
    */
   async createDraftReply({
     threadId,
     body,
+    to,
     replyAll = false,
     cc,
+    bcc,
+    allowSelf = false,
     fromEmail,
     attachments,
   }: {
     threadId: string
     body: string
+    to?: Array<{ name?: string; email: string }>
     replyAll?: boolean
-    cc?: Array<{ email: string }>
+    cc?: Array<{ name?: string; email: string }>
+    bcc?: Array<{ name?: string; email: string }>
+    allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Draft> {
-    const { parsed: thread } = await this.getThread({ threadId })
-    if (thread.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
-
-    const lastMsg = thread.messages[thread.messages.length - 1]!
-
-    const replyTo = lastMsg.replyTo ?? lastMsg.from.email
-    const to = [{ email: replyTo }]
-
-    let resolvedCc: Array<{ email: string }> | undefined
-    if (replyAll) {
-      const profile = await this.getProfile()
-      if (profile instanceof Error) return profile
-      const myEmail = profile.emailAddress.toLowerCase()
-
-      const allRecipients = [
-        ...lastMsg.to.map((r) => r.email),
-        ...(lastMsg.cc?.map((r) => r.email) ?? []),
-      ]
-        .filter((e) => e.toLowerCase() !== myEmail)
-        .filter((e) => e.toLowerCase() !== replyTo.toLowerCase())
-
-      if (allRecipients.length > 0) {
-        resolvedCc = allRecipients.map((e) => ({ email: e }))
-      }
-    }
-
-    if (cc) {
-      resolvedCc = [...(resolvedCc ?? []), ...cc]
-    }
-
-    const refs = [lastMsg.references, lastMsg.messageId].filter(Boolean).join(' ')
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | AuthError | ApiError | SentInThread<gmail_v1.Schema$Draft>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    if (envelope instanceof Error) return envelope
 
     const raw = this.buildMimeMessage({
-      to,
-      subject: lastMsg.subject.startsWith('Re:') ? lastMsg.subject : `Re: ${lastMsg.subject}`,
+      to: envelope.to,
+      subject: replySubject(envelope.anchorSubject),
       body,
-      cc: resolvedCc,
-      inReplyTo: lastMsg.messageId,
-      references: refs || undefined,
+      cc: envelope.cc,
+      bcc,
+      inReplyTo: envelope.inReplyTo,
+      references: envelope.references,
       fromEmail,
       attachments,
     })
@@ -940,7 +976,12 @@ export class GmailClient {
     )
     if (res instanceof Error) return res
 
-    return res.data
+    return {
+      message: res.data,
+      to: envelope.to.map((r) => r.email),
+      cc: (envelope.cc ?? []).map((r) => r.email),
+      recipientSource: envelope.source,
+    }
   }
 
   /**
@@ -958,12 +999,12 @@ export class GmailClient {
     body?: string
     fromEmail?: string
   }): Promise<EmptyThreadError | AuthError | ApiError | gmail_v1.Schema$Draft> {
-    const { parsed: thread } = await this.getThread({ threadId })
-    if (thread.messages.length === 0) {
-      return new EmptyThreadError({ threadId })
-    }
+    const thread = await this.getThread({ threadId })
+    if (thread instanceof Error) return thread
 
-    const lastMsg = thread.messages[thread.messages.length - 1]!
+    const lastMsg = threadAnchor(thread.parsed.messages)
+    if (!lastMsg) return new EmptyThreadError({ threadId })
+
     const renderedBody = renderEmailBody(lastMsg.body, lastMsg.mimeType)
 
     const fromStr = lastMsg.from.name && lastMsg.from.name !== lastMsg.from.email

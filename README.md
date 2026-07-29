@@ -107,12 +107,29 @@ zele mail list --filter "is:unread" --limit 100 | yq '.[].id' | xargs zele mail 
 zele mail search "from:github" --limit 100        # search with Gmail query syntax
 zele mail read <thread-id>                        # read a thread
 zele mail send                                    # send an email
+zele mail send --thread-id <thread-id>            # send into an existing thread
 zele mail reply <thread-id>                       # reply to a thread
+zele mail reply <thread-id> --dry-run             # show who the reply would go to
+zele mail reply <thread-id> --to paul@acme.com    # override the inferred recipient
 zele mail reply <thread-id> --attach report.xlsx  # reply with an attachment
 zele mail forward <thread-id>                     # forward a thread
 zele mail watch                                   # wait for the next new email
 zele mail watch --filter "is:unread from:alice"   # wait for a specific email
 zele mail watch --timeout 300                     # wait up to 5 minutes
+```
+
+**Reply recipients** are inferred from the thread, not from the sender of the last message. If the last message is one you sent, the reply still goes to the person you sent it to, and if a thread would only reply back to your own address zele **refuses to send** instead of quietly mailing you. Check first with `--dry-run`, override with `--to`, or opt in with `--allow-self`.
+
+```bash
+zele mail reply <thread-id> --dry-run                      # to / cc / subject / In-Reply-To, sends nothing
+zele mail reply <thread-id> --to paul@acme.com --body "…"  # explicit recipient wins
+zele mail reply <thread-id> --allow-self --body "…"        # deliberate note to self
+```
+
+Use `mail send --thread-id` when you want full control over recipients and subject while keeping correct threading (`In-Reply-To`, `References`, and Gmail's `threadId`):
+
+```bash
+zele mail send --thread-id <thread-id> --to paul@acme.com --cc dana@acme.com --body "…"
 ```
 
 `mail watch` blocks until the first email matching the filter arrives, prints it, and exits (code 0). If `--timeout` is set and no match arrives in time, it exits with code 1. This is useful for agents that need to send an email and then wait for the reply:

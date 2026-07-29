@@ -445,39 +445,45 @@ Name`
     setIsLoading(true)
     const { client } = await getClient([selectedAccount])
 
-    let result: Error | unknown
+    const recipients = (values.to ?? '')
+      .split(',')
+      .map((e) => ({ email: e.trim() }))
+      .filter((e) => e.email)
+
     if (mode.type === 'forward') {
-      const recipients = (values.to ?? '')
-        .split(',')
-        .map((e) => ({ email: e.trim() }))
-        .filter((e) => e.email)
-      result = await client.forwardThread({
+      const result = await client.forwardThread({
         threadId: mode.threadId,
         to: recipients,
         body: values.body || undefined,
       })
-    } else {
-      result = await client.replyToThread({
-        threadId: mode.threadId,
-        body: values.body ?? '',
-        replyAll: mode.replyAll,
-      })
-    }
+      setIsLoading(false)
 
-    setIsLoading(false)
+      if (result instanceof Error) {
+        await showFailureToast(result, { title: 'Failed to forward' })
+        return
+      }
 
-    if (result instanceof Error) {
-      await showFailureToast(result, {
-        title: mode.type === 'forward' ? 'Failed to forward' : 'Failed to send reply',
-      })
+      await showToast({ style: Toast.Style.Success, title: `Forwarded to ${values.to}` })
+      onSent?.()
+      pop()
       return
     }
 
-    const successTitle =
-      mode.type === 'forward'
-        ? `Forwarded to ${values.to}`
-        : 'Reply sent'
-    await showToast({ style: Toast.Style.Success, title: successTitle })
+    // An empty To field means "infer from the thread" (see resolveReplyRecipients).
+    const result = await client.sendInThread({
+      threadId: mode.threadId,
+      body: values.body ?? '',
+      to: recipients.length > 0 ? recipients : undefined,
+      replyAll: mode.replyAll,
+    })
+    setIsLoading(false)
+
+    if (result instanceof Error) {
+      await showFailureToast(result, { title: 'Failed to send reply' })
+      return
+    }
+
+    await showToast({ style: Toast.Style.Success, title: `Reply sent to ${result.to.join(', ')}` })
     onSent?.()
     pop()
   }
@@ -511,13 +517,15 @@ Name`
           ))}
         </Form.Dropdown>
       )}
-      {mode.type === 'forward' && (
-        <Form.TextField
-          id='to'
-          title='To'
-          placeholder='recipient@example.com'
-        />
-      )}
+      <Form.TextField
+        id='to'
+        title='To'
+        placeholder={
+          mode.type === 'forward'
+            ? 'recipient@example.com'
+            : 'leave empty to infer from the thread'
+        }
+      />
       <Form.TextArea
         id='body'
         title='Message'

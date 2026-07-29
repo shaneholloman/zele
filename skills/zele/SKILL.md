@@ -60,3 +60,16 @@ The README and `zele --help` output are the source of truth for commands, option
    zele mail watch --filter "is:unread from:bob@example.com subject:Re:Question" --timeout 600
    ```
    If the matched email wasn't the expected one, call `zele mail watch` again with a more specific filter. Exit code 0 means a match was found, exit code 1 means timeout.
+8. **Check reply recipients before sending** with `zele mail reply <thread-id> --dry-run`. Recipients are inferred from the thread, not from the sender of the last message, so a thread whose last message you sent still replies to the other person. If a reply would only reach the account's own address, zele refuses to send:
+   ```bash
+   # see to / cc / subject / In-Reply-To without sending
+   zele mail reply <thread-id> --dry-run
+
+   # override the inferred recipient
+   zele mail reply <thread-id> --to paul@acme.com --body "..."
+
+   # deliberately reply to yourself (normally refused)
+   zele mail reply <thread-id> --allow-self --body "..."
+   ```
+   Never work around a `SelfRecipientError` by switching to `zele mail send`; pass `--to` to `zele mail reply` instead, so threading headers stay correct.
+9. **Send into an existing thread** with `zele mail send --thread-id <thread-id>` when you need full control of recipients and subject but still want correct `In-Reply-To`/`References` headers. Recipients and subject are inferred from the thread when omitted.

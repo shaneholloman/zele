@@ -126,6 +126,22 @@ export class UnsupportedError extends errore.createTaggedError({
   message: '$feature is not available for $accountType accounts. $hint',
 }) {}
 
+/** Returned when a reply would be delivered only to the sending account itself.
+ *  This almost always means the recipient was inferred from a message *I* sent
+ *  (see resolveReplyRecipients in email-utils.ts). Callers should pass an
+ *  explicit recipient (`--to`) or opt in deliberately (`--allow-self`). */
+export class SelfRecipientError extends errore.createTaggedError({
+  name: 'SelfRecipientError',
+  message: 'Refusing to reply: resolved recipient $recipient is the sending account $account. Pass --to <email> to override, or --allow-self to send anyway.',
+}) {}
+
+/** Returned when no counterparty can be inferred from a thread (every message
+ *  was sent by the account itself and no message names an external recipient). */
+export class AmbiguousRecipientError extends errore.createTaggedError({
+  name: 'AmbiguousRecipientError',
+  message: 'Cannot infer a reply recipient for thread $threadId: every message is from the account itself. Pass --to <email>.',
+}) {}
+
 /** Returned when a thread has no List-Unsubscribe header (RFC 2369) so no
  *  standardized unsubscribe mechanism is available. */
 export class UnsubscribeUnavailableError extends errore.createTaggedError({

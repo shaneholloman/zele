@@ -20,7 +20,9 @@ export function registerAttachmentCommands(cli: ZeleCli) {
     .action(async (threadId, options) => {
       const { client } = await getClient(options.account)
 
-      const { parsed: thread } = await client.getThread({ threadId })
+      const threadResult = await client.getThread({ threadId })
+      if (threadResult instanceof Error) handleCommandError(threadResult)
+      const thread = threadResult.parsed
       const attachments = thread.messages.flatMap((msg) =>
         msg.attachments.map((attachment) => ({
           thread_id: thread.id,

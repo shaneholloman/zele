@@ -159,7 +159,9 @@ export function registerMailActionCommands(cli: ZeleCli) {
       const then = options.then ?? 'nothing'
 
       const { client } = await getClient(options.account)
-      const { parsed: thread } = await client.getThread({ threadId })
+      const threadResult = await client.getThread({ threadId })
+      if (threadResult instanceof Error) handleCommandError(threadResult)
+      const thread = threadResult.parsed
 
       const nonDraft = thread.messages.filter((m) => !m.isDraft)
       const latest: ParsedMessage | undefined = nonDraft[nonDraft.length - 1] ?? thread.messages[thread.messages.length - 1]
