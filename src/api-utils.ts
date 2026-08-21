@@ -120,6 +120,12 @@ export class ApiError extends errore.createTaggedError({
   message: 'API call failed: $reason',
 }) {}
 
+/** Returned when a SQLite/Prisma call fails. */
+export class DbError extends errore.createTaggedError({
+  name: 'DbError',
+  message: 'Database error: $reason',
+}) {}
+
 /** Returned when a command requires a capability (e.g. gmail labels) that the account doesn't support. */
 export class UnsupportedError extends errore.createTaggedError({
   name: 'UnsupportedError',
@@ -140,6 +146,14 @@ export class SelfRecipientError extends errore.createTaggedError({
 export class AmbiguousRecipientError extends errore.createTaggedError({
   name: 'AmbiguousRecipientError',
   message: 'Cannot infer a reply recipient for thread $threadId: no replyable external recipient was found. Pass --to <email>.',
+}) {}
+
+/** Returned when mail reply/send-in-thread runs against a thread whose latest
+ *  non-draft message was not shown by `mail read`. Prevents agents from
+ *  answering a stale view after a new reply arrives. */
+export class UnseenLatestError extends errore.createTaggedError({
+  name: 'UnseenLatestError',
+  message: 'Cannot reply to thread $threadId: latest message $lastMessageId was not read. Run: zele mail read $threadId',
 }) {}
 
 /** Returned when a thread has no List-Unsubscribe header (RFC 2369) so no

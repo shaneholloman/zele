@@ -28,6 +28,7 @@ model Account {
   updatedAt     DateTime @updatedAt
 
   threads        Thread[]
+  threadReads    ThreadRead[]
   labels         Label?
   profiles       Profile?
   syncStates     SyncState[]
@@ -110,6 +111,21 @@ model CalendarList {
   account Account @relation(fields: [email, appId], references: [email, appId], onDelete: Cascade)
 
   @@id([email, appId])
+}
+
+// Last message shown by `mail read` for a thread. Reply refuses to send unless
+// the live last non-draft message id still matches. Not a cache: rows persist
+// across thread-cache TTL and invalidation.
+model ThreadRead {
+  email     String
+  appId     String
+  threadId  String
+  messageId String
+  seenAt    DateTime
+
+  account Account @relation(fields: [email, appId], references: [email, appId], onDelete: Cascade)
+
+  @@id([email, appId, threadId])
 }
 
 // Stores persistent per-account sync metadata as generic key/value pairs.

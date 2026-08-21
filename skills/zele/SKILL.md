@@ -71,5 +71,11 @@ The README and `zele --help` output are the source of truth for commands, option
    # deliberately reply to yourself (normally refused)
    zele mail reply <thread-id> --allow-self --body "..."
    ```
-   Never work around a `SelfRecipientError` by switching to `zele mail send`; pass `--to` to `zele mail reply` instead, so threading headers stay correct.
-9. **Send into an existing thread** with `zele mail send --thread-id <thread-id>` when you need full control of recipients and subject but still want correct `In-Reply-To`/`References` headers. Recipients and subject are inferred from the thread when omitted.
+    Never work around a `SelfRecipientError` by switching to `zele mail send`; pass `--to` to `zele mail reply` instead, so threading headers stay correct.
+9. **Read a thread before replying.** `zele mail reply` and `zele mail send --thread-id` fail with `UnseenLatestError` unless `zele mail read <thread-id>` already showed the live last message. `mail watch` and `mail list` do **not** count. If a new reply arrives after you read, read again before sending:
+    ```bash
+    zele mail read <thread-id>
+    zele mail reply <thread-id> --body "..."
+    ```
+    Never pass `--force` to skip this unless the user explicitly asks to send without reading.
+10. **Send into an existing thread** with `zele mail send --thread-id <thread-id>` when you need full control of recipients and subject but still want correct `In-Reply-To`/`References` headers. Recipients and subject are inferred from the thread when omitted. The same read-before-reply rule applies.

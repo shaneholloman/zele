@@ -16,6 +16,8 @@ import { fileURLToPath } from 'node:url'
 import { createClient } from '@libsql/client'
 import { PrismaLibSql } from '@prisma/adapter-libsql'
 import { PrismaClient } from './generated/client.js'
+import * as errore from 'errore'
+import { DbError } from './api-utils.js'
 
 export { PrismaClient }
 
@@ -167,6 +169,56 @@ function secureDatabase(): void {
       fs.chmodSync(filePath, 0o600)
     }
   }
+}
+
+function dbBoundary<T>(fn: () => Promise<T>) {
+  return errore.tryAsync({
+    try: fn,
+    catch: (err) => new DbError({ reason: String(err), cause: err }),
+  })
+}
+
+/** Last message id shown by `mail read` for this thread, or null if never read. */
+export async function getThreadSeenMessageId({
+  email,
+  appId,
+  threadId,
+}: {
+  email: string
+  appId: string
+  threadId: string
+}) {
+  const row = await dbBoundary(async () => {
+    const prisma = await getPrisma()
+    return prisma.threadRead.findUnique({
+      where: { email_appId_threadId: { email, appId, threadId } },
+    })
+  })
+  if (row instanceof Error) return row
+  return row?.messageId ?? null
+}
+
+/** Record that `mail read` (or a Gmail send we just made) showed this message. */
+export async function setThreadSeenMessageId({
+  email,
+  appId,
+  threadId,
+  messageId,
+}: {
+  email: string
+  appId: string
+  threadId: string
+  messageId: string
+}) {
+  const seenAt = new Date()
+  return dbBoundary(async () => {
+    const prisma = await getPrisma()
+    await prisma.threadRead.upsert({
+      where: { email_appId_threadId: { email, appId, threadId } },
+      create: { email, appId, threadId, messageId, seenAt },
+      update: { messageId, seenAt },
+    })
+  })
 }
 
 /**

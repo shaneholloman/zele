@@ -11,9 +11,9 @@
 import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail'
 import type { OAuth2Client } from 'google-auth-library'
 import { createMimeMessage } from 'mimetext'
-import { parseFrom, parseAddressList, resolveReplyRecipients, replySubject, threadAnchor, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
+import { parseFrom, parseAddressList, resolveReplyRecipients, replySubject, threadAnchor, checkThreadLatestSeen, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import * as errore from 'errore'
-import { withRetry, mapConcurrent, AuthError, isAuthLikeError, ApiError, NotFoundError, EmptyThreadError, MissingDataError, abortableSleep, SelfRecipientError, AmbiguousRecipientError } from './api-utils.js'
+import { withRetry, mapConcurrent, AuthError, isAuthLikeError, ApiError, NotFoundError, EmptyThreadError, MissingDataError, abortableSleep, SelfRecipientError, AmbiguousRecipientError, UnseenLatestError } from './api-utils.js'
 import { renderEmailBody } from './output.js'
 import { getPrisma } from './db.js'
 import type { AccountId } from './auth.js'
@@ -442,11 +442,21 @@ export class GmailClient {
     return result
   }
 
-  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult | AuthError | ApiError> {
-    // Check cache
-    const cached = await this.getCachedThread(threadId)
-    if (cached) {
-      return { parsed: this.parseThread(cached), raw: cached }
+  async getThread({
+    threadId,
+    skipCache = false,
+  }: {
+    threadId: string
+    // mail read and reply seen-checks must skip cache. A stale cached last
+    // message would be recorded as seen, then a live reply fetch would never
+    // match, and the agent would loop on mail read.
+    skipCache?: boolean
+  }): Promise<ThreadResult | AuthError | ApiError> {
+    if (!skipCache) {
+      const cached = await this.getCachedThread(threadId)
+      if (cached) {
+        return { parsed: this.parseThread(cached), raw: cached }
+      }
     }
 
     const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
@@ -588,19 +598,29 @@ export class GmailClient {
     cc,
     replyAll = false,
     allowSelf = false,
+    seenMessageId,
   }: {
     threadId: string
     to?: Array<{ name?: string; email: string }>
     cc?: Array<{ name?: string; email: string }>
     replyAll?: boolean
     allowSelf?: boolean
-  }): Promise<ThreadReplyEnvelope | EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | AuthError | ApiError> {
-    const thread = await this.getThread({ threadId })
+    /** undefined skips the check (TUI, --force, --dry-run). null means never read. */
+    seenMessageId?: string | null
+  }): Promise<ThreadReplyEnvelope | EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | UnseenLatestError | AuthError | ApiError> {
+    const thread = await this.getThread({ threadId, skipCache: true })
     if (thread instanceof Error) return thread
 
     const messages = thread.parsed.messages
     if (messages.length === 0) {
       return new EmptyThreadError({ threadId })
+    }
+
+    if (seenMessageId !== undefined) {
+      const last = threadAnchor(messages)
+      if (!last) return new EmptyThreadError({ threadId })
+      const unseen = checkThreadLatestSeen({ threadId, lastMessageId: last.id, seenMessageId })
+      if (unseen) return unseen
     }
 
     // An explicit recipient without reply-all needs no inference, so an
@@ -661,6 +681,7 @@ export class GmailClient {
     allowSelf = false,
     fromEmail,
     attachments,
+    seenMessageId,
   }: {
     threadId: string
     body: string
@@ -672,8 +693,9 @@ export class GmailClient {
     allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | AuthError | ApiError | SentInThread<gmail_v1.Schema$Message>> {
-    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    seenMessageId?: string | null
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | UnseenLatestError | AuthError | ApiError | SentInThread<gmail_v1.Schema$Message>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf, seenMessageId })
     if (envelope instanceof Error) return envelope
 
     const result = await this.sendMessage({
@@ -943,6 +965,7 @@ export class GmailClient {
     allowSelf = false,
     fromEmail,
     attachments,
+    seenMessageId,
   }: {
     threadId: string
     body: string
@@ -953,8 +976,9 @@ export class GmailClient {
     allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | AuthError | ApiError | SentInThread<gmail_v1.Schema$Draft>> {
-    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    seenMessageId?: string | null
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | UnseenLatestError | AuthError | ApiError | SentInThread<gmail_v1.Schema$Draft>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf, seenMessageId })
     if (envelope instanceof Error) return envelope
 
     const raw = this.buildMimeMessage({

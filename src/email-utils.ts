@@ -2,12 +2,11 @@
 // Wraps the `email-addresses` package (RFC 5322 parser) with simpler return types.
 // Ported from Zero's apps/server/src/lib/email-utils.ts.
 //
-// Also hosts resolveReplyRecipients(): the single source of truth for "who does
-// a reply go to". It lives here (not in a client) because it is pure — no API
-// calls, no account state — so both GmailClient and ImapSmtpClient share it and
-// it can be tested without network access.
+// Also hosts resolveReplyRecipients() and checkThreadLatestSeen(). Both are
+// pure — no API calls, no account state — so GmailClient and ImapSmtpClient
+// share them and tests need no network.
 
-import { AmbiguousRecipientError, SelfRecipientError } from './api-utils.js'
+import { AmbiguousRecipientError, SelfRecipientError, UnseenLatestError } from './api-utils.js'
 import emailAddresses from 'email-addresses'
 const { parseFrom: _parseFrom, parseAddressList: _parseAddressList } = emailAddresses
 
@@ -118,6 +117,21 @@ export interface SentInThread<M> {
 /** Prefix a subject with "Re:" unless it already has one (case-insensitive). */
 export function replySubject(subject: string): string {
   return /^re\s*:/i.test(subject.trim()) ? subject : `Re: ${subject}`
+}
+
+/** Refuse a reply unless `mail read` already showed this live last message.
+ *  Compare Gmail/IMAP message ids, not RFC Message-ID headers. */
+export function checkThreadLatestSeen({
+  threadId,
+  lastMessageId,
+  seenMessageId,
+}: {
+  threadId: string
+  lastMessageId: string
+  seenMessageId: string | null
+}): UnseenLatestError | null {
+  if (seenMessageId === lastMessageId) return null
+  return new UnseenLatestError({ threadId, lastMessageId })
 }
 
 /**

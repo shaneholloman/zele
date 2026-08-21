@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS "CalendarList" (
     PRIMARY KEY ("email", "appId"),
     CONSTRAINT "CalendarList_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
 );
+CREATE TABLE IF NOT EXISTS "ThreadRead" (
+    "email" TEXT NOT NULL,
+    "appId" TEXT NOT NULL,
+    "threadId" TEXT NOT NULL,
+    "messageId" TEXT NOT NULL,
+    "seenAt" DATETIME NOT NULL,
+
+    PRIMARY KEY ("email", "appId", "threadId"),
+    CONSTRAINT "ThreadRead_email_appId_fkey" FOREIGN KEY ("email", "appId") REFERENCES "Account" ("email", "appId") ON DELETE CASCADE ON UPDATE CASCADE
+);
 CREATE TABLE IF NOT EXISTS "SyncState" (
     "email" TEXT NOT NULL,
     "appId" TEXT NOT NULL,

@@ -108,15 +108,18 @@ zele mail search "from:github" --limit 100        # search with Gmail query synt
 zele mail read <thread-id>                        # read a thread
 zele mail send                                    # send an email
 zele mail send --thread-id <thread-id>            # send into an existing thread
-zele mail reply <thread-id>                       # reply to a thread
+zele mail reply <thread-id>                       # reply to a thread (must mail read first)
 zele mail reply <thread-id> --dry-run             # show who the reply would go to
 zele mail reply <thread-id> --to paul@acme.com    # override the inferred recipient
 zele mail reply <thread-id> --attach report.xlsx  # reply with an attachment
+zele mail reply <thread-id> --force               # reply without a prior mail read
 zele mail forward <thread-id>                     # forward a thread
 zele mail watch                                   # wait for the next new email
 zele mail watch --filter "is:unread from:alice"   # wait for a specific email
 zele mail watch --timeout 300                     # wait up to 5 minutes
 ```
+
+**Reply safety.** `mail reply` and `mail send --thread-id` **refuse to send** unless `mail read` already showed the live last message in that thread. This stops agents from answering a stale view after a new reply arrives. `--dry-run` does not send, so it skips the check. `--force` skips it too.
 
 **Reply recipients** are inferred from the thread, not from the sender of the last message. If the last message is one you sent, the reply still goes to the person you sent it to, and if a thread would only reply back to your own address zele **refuses to send** instead of quietly mailing you. Check first with `--dry-run`, override with `--to`, or opt in with `--allow-self`.
 

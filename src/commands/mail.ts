@@ -10,10 +10,11 @@ import path from 'node:path'
 import React from 'react'
 import { lookup as mimeLookup } from 'mrmime'
 import { getClients, getClient, listAccounts, login } from '../auth.js'
-import { replySubject } from '../email-utils.js'
+import { replySubject, threadAnchor } from '../email-utils.js'
 import type { ThreadListResult } from '../gmail-client.js'
 import type { GmailClient } from '../gmail-client.js'
 import { AuthError } from '../api-utils.js'
+import { getThreadSeenMessageId, setThreadSeenMessageId } from '../db.js'
 import { hasUnsubscribeMechanism, hasOneClickUnsubscribe } from '../unsubscribe.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
@@ -47,6 +48,42 @@ function parseEmailList(value?: string): Array<{ email: string }> | undefined {
     .filter(Boolean)
     .map((email) => ({ email }))
   return parsed.length > 0 ? parsed : undefined
+}
+
+async function markThreadSeen({
+  email,
+  appId,
+  threadId,
+  messages,
+}: {
+  email: string
+  appId: string
+  threadId: string
+  messages: Array<{ id: string; isDraft: boolean }>
+}) {
+  const last = threadAnchor(messages)
+  if (!last) return
+  const result = await setThreadSeenMessageId({ email, appId, threadId, messageId: last.id })
+  if (result instanceof Error) {
+    console.warn('Failed to record thread read:', result.message)
+  }
+}
+
+async function loadSeenMessageId({
+  email,
+  appId,
+  threadId,
+  force,
+}: {
+  email: string
+  appId: string
+  threadId: string
+  force?: boolean
+}) {
+  if (force) return undefined
+  const seen = await getThreadSeenMessageId({ email, appId, threadId })
+  if (seen instanceof Error) handleCommandError(seen)
+  return seen
 }
 
 function resolveAttachments(filePaths?: string[]) {
@@ -279,7 +316,7 @@ export function registerMailCommands(cli: ZeleCli) {
         process.exit(1)
       }
 
-      const { client } = await getClient(options.account)
+      const { client, email, appId } = await getClient(options.account)
 
       if (options.raw && options.rawHtml) {
         out.error('--raw and --raw-html cannot be used together')
@@ -291,7 +328,7 @@ export function registerMailCommands(cli: ZeleCli) {
           out.error('--raw only supports a single thread ID')
           process.exit(1)
         }
-        const threadResult = await client.getThread({ threadId: threadIds[0]! })
+        const threadResult = await client.getThread({ threadId: threadIds[0]!, skipCache: true })
         if (threadResult instanceof Error) handleCommandError(threadResult)
         const thread = threadResult.parsed
         if (thread.messages.length === 0) {
@@ -301,6 +338,7 @@ export function registerMailCommands(cli: ZeleCli) {
         const rawMsg = await client.getRawMessage({ messageId: thread.messages[0]!.id })
         if (rawMsg instanceof Error) handleCommandError(rawMsg)
         console.log(rawMsg)
+        await markThreadSeen({ email, appId, threadId: thread.id, messages: [thread.messages[0]!] })
         return
       }
 
@@ -308,7 +346,7 @@ export function registerMailCommands(cli: ZeleCli) {
       // can still reject. Keep each read isolated so one failure cannot abort
       // a multi-thread command.
       const settled = await Promise.allSettled(
-        threadIds.map((id) => client.getThread({ threadId: id })),
+        threadIds.map((id) => client.getThread({ threadId: id, skipCache: true })),
       )
 
       const w = Math.min(process.stdout.columns || 72, 72)
@@ -353,6 +391,7 @@ export function registerMailCommands(cli: ZeleCli) {
               console.log('\n<!-- ZELE_MESSAGE_SEPARATOR -->\n')
             }
           })
+          await markThreadSeen({ email, appId, threadId: thread.id, messages: thread.messages })
           if (multi) console.log()
           continue
         }
@@ -420,6 +459,8 @@ export function registerMailCommands(cli: ZeleCli) {
           console.log(body)
           console.log('\n' + rule + '\n')
         }
+
+        await markThreadSeen({ email, appId, threadId: thread.id, messages: thread.messages })
       }
     })
 
@@ -440,6 +481,7 @@ export function registerMailCommands(cli: ZeleCli) {
     .option('--allow-self', 'With --thread-id: allow sending to your own address')
     .option('--from <from>', z.string().describe('Send-as alias email'))
     .option('--attach <attach>', z.array(z.string()).describe('File to attach (repeatable: --attach a.pdf --attach b.png)'))
+    .option('--force', 'With --thread-id: send even if the latest message was not read')
     .action(async (options) => {
       // With --thread-id both --to and --subject are inferred from the thread.
       if (!options.to && !options.threadId) {
@@ -475,12 +517,18 @@ export function registerMailCommands(cli: ZeleCli) {
       const cc = parseEmailList(options.cc)
       const bcc = parseEmailList(options.bcc)
 
-      const { client } = await getClient(options.account)
+      const { client, email, appId, accountType } = await getClient(options.account)
 
       // --thread-id sends into an existing conversation: recipients default to
       // the thread's counterparty and the In-Reply-To/References headers (plus
       // Gmail's threadId) are derived from it, so the message actually threads.
       if (options.threadId) {
+        const seenMessageId = await loadSeenMessageId({
+          email,
+          appId,
+          threadId: options.threadId,
+          force: options.force,
+        })
         const result = await client.sendInThread({
           threadId: options.threadId,
           to,
@@ -492,8 +540,20 @@ export function registerMailCommands(cli: ZeleCli) {
           allowSelf: options.allowSelf,
           fromEmail: options.from,
           attachments,
+          seenMessageId,
         })
         if (result instanceof Error) handleCommandError(result)
+        if (accountType === 'google' && result.message.id) {
+          const marked = await setThreadSeenMessageId({
+            email,
+            appId,
+            threadId: options.threadId,
+            messageId: result.message.id,
+          })
+          if (marked instanceof Error) {
+            console.warn('Sent, but failed to record the new message as read:', marked.message)
+          }
+        }
 
         out.printYaml({
           ...result.message,
@@ -547,6 +607,7 @@ export function registerMailCommands(cli: ZeleCli) {
     .option('--attach <attach>', z.array(z.string()).describe('File to attach (repeatable: --attach a.pdf --attach b.png)'))
     .option('--draft', 'Save as draft instead of sending')
     .option('--dry-run', 'Print the resolved recipients and headers without sending')
+    .option('--force', 'Reply even if the latest message was not read')
     .action(async (threadId, options) => {
       // --dry-run answers "who would this reply go to?" before committing to send.
       if (options.dryRun) {
@@ -594,7 +655,7 @@ export function registerMailCommands(cli: ZeleCli) {
 
       const attachments = resolveAttachments(options.attach)
 
-      const { client, email: accountEmail } = await getClient(options.account)
+      const { client, email: accountEmail, appId, accountType } = await getClient(options.account)
 
       const to = parseEmailList(options.to)
       const cc = parseEmailList(options.cc)
@@ -605,6 +666,13 @@ export function registerMailCommands(cli: ZeleCli) {
       if (to && to.every((r) => r.email.toLowerCase() === accountEmail.toLowerCase())) {
         out.hint(`Recipient is your own address (${accountEmail})`)
       }
+
+      const seenMessageId = await loadSeenMessageId({
+        email: accountEmail,
+        appId,
+        threadId,
+        force: options.force,
+      })
 
       if (options.draft) {
         const result = await client.createDraftReply({
@@ -617,6 +685,7 @@ export function registerMailCommands(cli: ZeleCli) {
           allowSelf: options.allowSelf,
           fromEmail: options.from,
           attachments,
+          seenMessageId,
         })
         if (result instanceof Error) handleCommandError(result)
 
@@ -641,8 +710,20 @@ export function registerMailCommands(cli: ZeleCli) {
         allowSelf: options.allowSelf,
         fromEmail: options.from,
         attachments,
+        seenMessageId,
       })
       if (result instanceof Error) handleCommandError(result)
+      if (accountType === 'google' && result.message.id) {
+        const marked = await setThreadSeenMessageId({
+          email: accountEmail,
+          appId,
+          threadId,
+          messageId: result.message.id,
+        })
+        if (marked instanceof Error) {
+          console.warn('Sent, but failed to record the new message as read:', marked.message)
+        }
+      }
 
       out.printYaml({
         ...result.message,

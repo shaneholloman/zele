@@ -10,8 +10,8 @@ import { ImapFlow, type FetchMessageObject, type MessageEnvelopeObject, type Mai
 import type { Transporter } from 'nodemailer'
 import { createMimeMessage } from 'mimetext'
 import * as errore from 'errore'
-import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, SelfRecipientError, AmbiguousRecipientError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
-import { resolveReplyRecipients, replySubject, threadAnchor, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
+import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, SelfRecipientError, AmbiguousRecipientError, UnseenLatestError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
+import { resolveReplyRecipients, replySubject, threadAnchor, checkThreadLatestSeen, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import { renderEmailBody } from './output.js'
 import type { AccountId, ImapSmtpCredentials, ImapCredentials, SmtpCredentials } from './auth.js'
 import type {
@@ -412,7 +412,12 @@ export class ImapSmtpClient {
     }) as Promise<ThreadListResult | AuthError | ApiError>
   }
 
-  async getThread({ threadId }: { threadId: string }): Promise<ThreadResult | NotFoundError | AuthError | ApiError> {
+  async getThread({
+    threadId,
+  }: {
+    threadId: string
+    skipCache?: boolean
+  }): Promise<ThreadResult | NotFoundError | AuthError | ApiError> {
     const { folder, uid } = parseThreadId(threadId)
 
     const result = await this.withImap(async (client) => {
@@ -613,19 +618,28 @@ export class ImapSmtpClient {
     cc,
     replyAll = false,
     allowSelf = false,
+    seenMessageId,
   }: {
     threadId: string
     to?: Array<{ name?: string; email: string }>
     cc?: Array<{ name?: string; email: string }>
     replyAll?: boolean
     allowSelf?: boolean
-  }): Promise<ThreadReplyEnvelope | EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | NotFoundError | AuthError | ApiError> {
-    const thread = await this.getThread({ threadId })
+    seenMessageId?: string | null
+  }): Promise<ThreadReplyEnvelope | EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | UnseenLatestError | NotFoundError | AuthError | ApiError> {
+    const thread = await this.getThread({ threadId, skipCache: true })
     if (thread instanceof Error) return thread
 
     const messages = thread.parsed.messages
     if (messages.length === 0) {
       return new EmptyThreadError({ threadId })
+    }
+
+    if (seenMessageId !== undefined) {
+      const last = threadAnchor(messages)
+      if (!last) return new EmptyThreadError({ threadId })
+      const unseen = checkThreadLatestSeen({ threadId, lastMessageId: last.id, seenMessageId })
+      if (unseen) return unseen
     }
 
     // IMAP has no portable send-as alias API. A message fetched from Sent is
@@ -672,6 +686,7 @@ export class ImapSmtpClient {
     replyAll = false,
     allowSelf = false,
     attachments,
+    seenMessageId,
   }: {
     threadId: string
     body: string
@@ -683,8 +698,9 @@ export class ImapSmtpClient {
     allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | NotFoundError | UnsupportedError | AuthError | ApiError | SentInThread<{ id: string; threadId: string; labelIds: string[] }>> {
-    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    seenMessageId?: string | null
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | UnseenLatestError | NotFoundError | UnsupportedError | AuthError | ApiError | SentInThread<{ id: string; threadId: string; labelIds: string[] }>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf, seenMessageId })
     if (envelope instanceof Error) return envelope
 
     const result = await this.sendMessage({
@@ -1236,6 +1252,7 @@ export class ImapSmtpClient {
     allowSelf = false,
     fromEmail,
     attachments,
+    seenMessageId,
   }: {
     threadId: string
     body: string
@@ -1246,8 +1263,9 @@ export class ImapSmtpClient {
     allowSelf?: boolean
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | NotFoundError | AuthError | ApiError | SentInThread<{ id: string; message: { id: string }; threadId: string }>> {
-    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf })
+    seenMessageId?: string | null
+  }): Promise<EmptyThreadError | SelfRecipientError | AmbiguousRecipientError | UnseenLatestError | NotFoundError | AuthError | ApiError | SentInThread<{ id: string; message: { id: string }; threadId: string }>> {
+    const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf, seenMessageId })
     if (envelope instanceof Error) return envelope
 
     // Build MIME with reply headers using mimetext (already used elsewhere in this client)

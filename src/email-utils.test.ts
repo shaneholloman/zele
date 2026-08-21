@@ -5,8 +5,8 @@
 
 import { OAuth2Client } from 'google-auth-library'
 import { describe, expect, test } from 'vitest'
-import { AmbiguousRecipientError, SelfRecipientError } from './api-utils.js'
-import { resolveReplyRecipients, threadAnchor } from './email-utils.js'
+import { AmbiguousRecipientError, SelfRecipientError, UnseenLatestError } from './api-utils.js'
+import { checkThreadLatestSeen, resolveReplyRecipients, threadAnchor } from './email-utils.js'
 import { GmailClient } from './gmail-client.js'
 import { ImapSmtpClient } from './imap-smtp-client.js'
 
@@ -482,5 +482,55 @@ describe('resolveReplyRecipients', () => {
       threadId: 'thread_1',
     })
     expect(r).toBeInstanceOf(AmbiguousRecipientError)
+  })
+})
+
+describe('checkThreadLatestSeen', () => {
+  test('allows reply when the seen id matches the live last message', () => {
+    const result = checkThreadLatestSeen({
+      threadId: 'thread_1',
+      lastMessageId: 'msg_2',
+      seenMessageId: 'msg_2',
+    })
+    expect(result).toBeNull()
+  })
+
+  test('refuses reply when the thread was never read', () => {
+    const result = checkThreadLatestSeen({
+      threadId: 'thread_1',
+      lastMessageId: 'msg_2',
+      seenMessageId: null,
+    })
+    expect(result).toBeInstanceOf(UnseenLatestError)
+    expect(result instanceof Error ? result.message : result).toMatchInlineSnapshot(`"Cannot reply to thread thread_1: latest message msg_2 was not read. Run: zele mail read thread_1"`)
+  })
+
+  test('refuses reply when a newer message arrived after the last read', () => {
+    const result = checkThreadLatestSeen({
+      threadId: 'thread_1',
+      lastMessageId: 'msg_3',
+      seenMessageId: 'msg_2',
+    })
+    expect(result).toBeInstanceOf(UnseenLatestError)
+    expect(result instanceof Error ? result.message : result).toMatchInlineSnapshot(`"Cannot reply to thread thread_1: latest message msg_3 was not read. Run: zele mail read thread_1"`)
+  })
+
+  test('uses the last non-draft message id as the live latest', () => {
+    const parsed = client.parseThread(thread([
+      { from: `Paul <${PEER}>`, to: ME },
+      { from: `Me <${ME}>`, to: PEER, labelIds: ['DRAFT'] },
+    ]) as any)
+    const last = threadAnchor(parsed.messages)
+    expect(last?.id).toBe('msg_0')
+    expect(checkThreadLatestSeen({
+      threadId: parsed.id,
+      lastMessageId: last!.id,
+      seenMessageId: 'msg_0',
+    })).toBeNull()
+    expect(checkThreadLatestSeen({
+      threadId: parsed.id,
+      lastMessageId: last!.id,
+      seenMessageId: 'msg_1',
+    })).toBeInstanceOf(UnseenLatestError)
   })
 })
