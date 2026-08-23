@@ -8,4 +8,4 @@ Prisma + `@prisma/adapter-libsql` could acknowledge writes in the same process a
 
 The CLI now uses a single sync `DatabaseSync` handle. A write is committed when the statement returns.
 
-CLI commands now need **Node.js 22.13+** (`node:sqlite`). Existing `~/.zele/sqlite.db` files keep working. Table and column names are unchanged.
+CLI commands now need **Node.js 22.16+** (`node:sqlite`). Existing `~/.zele/sqlite.db` files keep working. Table and column names are unchanged.
