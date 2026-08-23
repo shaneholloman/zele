@@ -223,11 +223,22 @@ export async function setThreadSeenMessageId({
 
 /**
  * Close the Prisma connection.
+ *
+ * Checkpoint WAL first. libsql discards uncheckpointed frames on close, so
+ * mail read's ThreadRead row never survived to the next process. That made
+ * every mail reply fail with "latest message was not read".
  */
 export async function closePrisma(): Promise<void> {
-  if (prismaInstance) {
-    await prismaInstance.$disconnect()
-    prismaInstance = null
-    initPromise = null
+  if (!prismaInstance) return
+  const prisma = prismaInstance
+  const checkpoint = await errore.tryAsync({
+    try: () => prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)'),
+    catch: (err) => new DbError({ reason: String(err), cause: err }),
+  })
+  if (checkpoint instanceof Error) {
+    console.warn('Failed to checkpoint sqlite WAL:', checkpoint.message)
   }
+  await prisma.$disconnect()
+  prismaInstance = null
+  initPromise = null
 }
