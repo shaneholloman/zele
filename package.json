@@ -1,6 +1,6 @@
 {
   "name": "zele",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Email & Calendar CLI — Gmail, IMAP/SMTP, Google Calendar from your terminal",
   "type": "module",
   "main": "dist/cli.js",

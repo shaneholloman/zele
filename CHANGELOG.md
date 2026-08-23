@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0
+
+1. **Safer `mail reply` recipients** — replies used to go to the sender of the last message. When that last message was yours, the reply landed in your own inbox. Drafts made it worse: a trailing draft became the anchor, so the reply targeted you and lost its `In-Reply-To` header.
+
+   Recipients now come from the thread:
+
+   - the anchor is the last **non-draft** message
+   - `Reply-To` is parsed as an address list, so `Reply-To: Paul <paul@acme.com>` and multi-address `Reply-To` work
+   - when the last message was sent by you, the reply goes to **its recipients**; if it was self-addressed, zele walks back to the last message from someone else
+   - send-as aliases, plus-tagged variants, and Gmail dotted variants count as you
+
+   New flags:
+
+   ```bash
+   zele mail reply <thread-id> --dry-run                      # print recipients/sender/threading headers, send nothing
+   zele mail reply <thread-id> --to paul@acme.com --body "…"  # override the inferred recipient
+   zele mail reply <thread-id> --bcc ops@acme.com --body "…"
+   zele mail reply <thread-id> --allow-self --body "…"        # deliberate note to self
+   ```
+
+   A reply that would only reach you is **refused** with `SelfRecipientError` instead of being sent silently. `mail reply` prints the resolved recipients on success.
+
+   New `zele mail send --thread-id` sends into an existing thread with correct `In-Reply-To`/`References` (and Gmail's `threadId`):
+
+   ```bash
+   zele mail send --thread-id <thread-id> --to paul@acme.com --cc dana@acme.com --body "…"
+   ```
+
+2. **`mail reply` requires a prior `mail read`** — agents can no longer reply from a stale thread view. If the latest message changed since the last `mail read`, the command fails with `UnseenLatestError`:
+
+   ```bash
+   zele mail read 18f3b7c9d2a1e4f0
+   zele mail reply 18f3b7c9d2a1e4f0 --body "sounds good"
+   ```
+
+   `--dry-run` still works without a prior read because it does not send. Pass `--force` to skip the check. `mail watch` and `mail list` do not count as a read. The TUI is unchanged.
+
+3. **Reliable local database** — Prisma + `@prisma/adapter-libsql` could acknowledge writes in the same process and then roll them back on exit. That made `mail reply` fail with "latest message was not read" after `mail read`, and it dropped refreshed OAuth tokens.
+
+   The CLI now uses Drizzle with `node:sqlite`. A write is committed when the statement returns. Existing `~/.zele/sqlite.db` files keep working.
+
+   CLI commands now need **Node.js 22.16+**.
+
 ## 0.5.0
 
 1. **`mail watch` exits on first match** — `mail watch` now blocks until the first email matching the filter arrives, prints it, and exits with code 0. This makes it useful for agents that need to wait for a specific email (verification codes, replies, etc.). The `--once` flag has been removed since the new behavior subsumes it.
