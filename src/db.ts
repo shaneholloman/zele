@@ -2,6 +2,8 @@
 // One sync handle for schema init and queries. Do not use libsql or Prisma:
 // their local-file adapters can leave writes in a zombie transaction that
 // rolls back on process exit (prisma/prisma#30028, libsql-client-ts#350).
+// node:sqlite is not built with SQLITE_ENABLE_UPDATE_DELETE_LIMIT. Never
+// add .limit(1) on drizzle update/delete. Node throws. Bun hides it.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -43,6 +45,7 @@ export function getDb(): ZeleDb {
   const sqlite = new DatabaseSync(DB_PATH)
   sqlite.exec('PRAGMA busy_timeout = 15000')
   sqlite.exec('PRAGMA journal_mode = WAL')
+  sqlite.exec('PRAGMA synchronous = FULL')
   sqlite.exec('PRAGMA foreign_keys = ON')
   applySchemaAndMigrate(sqlite)
   secureDatabase()
@@ -169,11 +172,6 @@ export async function setThreadSeenMessageId({
 /** Close the SQLite handle. Safe to call when no DB was opened. */
 export function closeDb(): void {
   if (!sqliteInstance) return
-  try {
-    sqliteInstance.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-  } catch (err) {
-    console.warn('Failed to checkpoint sqlite WAL:', String(err))
-  }
   sqliteInstance.close()
   sqliteInstance = null
   dbInstance = null

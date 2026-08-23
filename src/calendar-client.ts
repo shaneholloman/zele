@@ -393,7 +393,6 @@ export class CalendarClient {
           orm.eq(schema.calendarList.appId, this.account.appId),
         ),
       )
-      .limit(1)
       .run()
   }
 

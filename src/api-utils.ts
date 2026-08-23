@@ -120,7 +120,7 @@ export class ApiError extends errore.createTaggedError({
   message: 'API call failed: $reason',
 }) {}
 
-/** Returned when a SQLite/Prisma call fails. */
+/** Returned when a SQLite/Drizzle call fails. */
 export class DbError extends errore.createTaggedError({
   name: 'DbError',
   message: 'Database error: $reason',

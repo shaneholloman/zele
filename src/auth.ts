@@ -1,5 +1,5 @@
 // OAuth2 authentication module for zele.
-// Multi-account support: tokens are stored in the Prisma-managed SQLite DB
+// Multi-account support: tokens are stored in the Drizzle-managed SQLite DB
 // (accounts table) keyed by (email, app_id). Supports login (browser OAuth),
 // per-account token refresh, and helpers to get authenticated GmailClient
 // instances for one or all accounts.
@@ -809,7 +809,6 @@ async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
     db.update(schema.account)
       .set({ tokens: JSON.stringify(merged), updatedAt: new Date() })
       .where(orm.and(orm.eq(schema.account.email, account.email), orm.eq(schema.account.appId, account.appId)))
-      .limit(1)
       .run()
   }
 

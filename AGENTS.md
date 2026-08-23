@@ -30,6 +30,8 @@ zele uses a single SQLite database at `~/.zele/sqlite.db` as the source of truth
 
 Use Drizzle + `node:sqlite` (`DatabaseSync`). Do not use Prisma or `@libsql/client` for this file DB. Their local adapters can leave writes in a zombie transaction that rolls back on process exit.
 
+Do not add `.limit(1)` on drizzle `update`/`delete`. `node:sqlite` is not built with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`. Node throws `near "limit": syntax error`. Bun hides it.
+
 Schema lives in `src/schema.ts`. Table and column names must match the existing file (PascalCase tables, camelCase columns). Runtime DDL is `src/schema.sql`, applied on startup.
 
 Tables:

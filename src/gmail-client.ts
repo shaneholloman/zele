@@ -351,7 +351,6 @@ export class GmailClient {
           orm.eq(schema.thread.threadId, threadId),
         ),
       )
-      .limit(1)
       .run()
   }
 
@@ -390,7 +389,6 @@ export class GmailClient {
       .where(
         orm.and(orm.eq(schema.label.email, this.account!.email), orm.eq(schema.label.appId, this.account!.appId)),
       )
-      .limit(1)
       .run()
   }
 

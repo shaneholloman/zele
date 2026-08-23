@@ -11,7 +11,7 @@
 
 Multi-account email and calendar client supporting **Google OAuth** and **IMAP/SMTP** (Fastmail, Outlook, any provider). SQLite cache, YAML output.
 
-All CLI commands work with **Node.js** (v18+). The interactive TUI (`zele` with no subcommand) requires [Bun](https://bun.sh) and will auto-spawn it if available.
+All CLI commands work with **Node.js** (v22.13+). The interactive TUI (`zele` with no subcommand) requires [Bun](https://bun.sh) and will auto-spawn it if available.
 
 ```bash
 # with npm / npx (CLI commands only, no TUI)
