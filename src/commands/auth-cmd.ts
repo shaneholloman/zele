@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { colors as pc, isAgent } from 'goke'
 import * as clack from '@clack/prompts'
 import { login, loginImap, logout, listAccounts, getAuthStatuses } from '../auth.js'
-import { closePrisma } from '../db.js'
+import { closeDb } from '../db.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
 
@@ -66,7 +66,7 @@ export function registerAuthCommands(cli: ZeleCli) {
       if (result instanceof Error) handleCommandError(result)
       const { email } = result
       out.success(`Authenticated as ${email}`)
-      await closePrisma()
+      await closeDb()
       process.exit(0)
     })
 
@@ -212,7 +212,7 @@ export function registerAuthCommands(cli: ZeleCli) {
 
       const caps = smtpHost ? 'IMAP + SMTP' : 'IMAP only'
       out.success(`Authenticated ${result.email} (${caps})`)
-      await closePrisma()
+      await closeDb()
       process.exit(0)
     })
 

@@ -26,7 +26,8 @@ import {
 } from 'ts-ics'
 import crypto from 'node:crypto'
 import * as errore from 'errore'
-import { getPrisma } from './db.js'
+import * as orm from 'drizzle-orm'
+import { getDb, schema } from './db.js'
 import { AuthError, isAuthLikeError, ApiError, NotFoundError, ParseError, MissingDataError } from './api-utils.js'
 
 /** Boundary helper: wrap a tsdav/CalDAV call, converting auth-like errors to AuthError values.
@@ -359,24 +360,41 @@ export class CalendarClient {
   }
 
   private async getCachedCalendarList(): Promise<CalendarListItem[] | undefined> {
-    const prisma = await getPrisma()
-    const row = await prisma.calendarList.findUnique({ where: { email_appId: this.account } })
+    const row = getDb().query.calendarList.findFirst({
+      where: { email: this.account.email, appId: this.account.appId },
+    }).sync()
     if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
     return JSON.parse(row.rawData) as CalendarListItem[]
   }
 
   private async cacheCalendarListData(data: CalendarListItem[]): Promise<void> {
-    const prisma = await getPrisma()
-    await prisma.calendarList.upsert({
-      where: { email_appId: this.account },
-      create: { ...this.account, rawData: JSON.stringify(data), ttlMs: TTL.CALENDAR_LIST, createdAt: new Date() },
-      update: { rawData: JSON.stringify(data), ttlMs: TTL.CALENDAR_LIST, createdAt: new Date() },
-    })
+    const now = new Date()
+    getDb()
+      .insert(schema.calendarList)
+      .values({
+        ...this.account,
+        rawData: JSON.stringify(data),
+        ttlMs: TTL.CALENDAR_LIST,
+        createdAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [schema.calendarList.email, schema.calendarList.appId],
+        set: { rawData: JSON.stringify(data), ttlMs: TTL.CALENDAR_LIST, createdAt: now },
+      })
+      .run()
   }
 
   private async invalidateCalendarLists(): Promise<void> {
-    const prisma = await getPrisma()
-    await prisma.calendarList.deleteMany({ where: this.account })
+    getDb()
+      .delete(schema.calendarList)
+      .where(
+        orm.and(
+          orm.eq(schema.calendarList.email, this.account.email),
+          orm.eq(schema.calendarList.appId, this.account.appId),
+        ),
+      )
+      .limit(1)
+      .run()
   }
 
   // =========================================================================

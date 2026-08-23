@@ -1,25 +1,17 @@
-// Prisma singleton for zele.
-// Manages a single SQLite database at ~/.zele/sqlite.db for all state:
-// accounts (OAuth tokens), cache (threads, labels, profiles), and sync state.
-// Runs idempotent schema setup on every startup using src/schema.sql.
-//
-// Schema init uses a direct libsql transaction (BEGIN IMMEDIATE) so all DDL
-// runs under a single write-lock acquisition. This avoids the SQLITE_BUSY
-// contention that happens when multiple CLI processes each try to acquire the
-// write lock 13+ times (once per CREATE TABLE/INDEX statement). The busy_timeout
-// PRAGMA (15s) handles the wait if another process holds the lock.
+// Drizzle + node:sqlite for ~/.zele/sqlite.db.
+// One sync handle for schema init and queries. Do not use libsql or Prisma:
+// their local-file adapters can leave writes in a zombie transaction that
+// rolls back on process exit (prisma/prisma#30028, libsql-client-ts#350).
 
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { createClient } from '@libsql/client'
-import { PrismaLibSql } from '@prisma/adapter-libsql'
-import { PrismaClient } from './generated/client.js'
+import { DatabaseSync } from 'node:sqlite'
+import { drizzle } from 'drizzle-orm/node-sqlite'
 import * as errore from 'errore'
 import { DbError } from './api-utils.js'
-
-export { PrismaClient }
+import * as schema from './schema.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -27,68 +19,40 @@ const __dirname = path.dirname(__filename)
 const ZELE_DIR = path.join(os.homedir(), '.zele')
 const DB_PATH = path.join(ZELE_DIR, 'sqlite.db')
 
-let prismaInstance: PrismaClient | null = null
-let initPromise: Promise<PrismaClient> | null = null
+export { schema }
 
-/**
- * Get the singleton Prisma client instance.
- * Initializes the database on first call, running schema setup if needed.
- */
-export function getPrisma(): Promise<PrismaClient> {
-  if (prismaInstance) {
-    return Promise.resolve(prismaInstance)
-  }
-  if (initPromise) {
-    return initPromise
-  }
-  initPromise = initializePrisma()
-  return initPromise
+export type ZeleDb = ReturnType<typeof createDb>
+
+let sqliteInstance: DatabaseSync | null = null
+let dbInstance: ZeleDb | null = null
+
+function createDb(client: DatabaseSync) {
+  return drizzle({ client, schema, relations: schema.relations })
 }
 
-async function initializePrisma(): Promise<PrismaClient> {
-  // Create directory with restrictive permissions (owner only)
+/** Get the singleton Drizzle client. Creates ~/.zele and applies schema.sql on first call. */
+export function getDb(): ZeleDb {
+  if (dbInstance) return dbInstance
+
   if (!fs.existsSync(ZELE_DIR)) {
     fs.mkdirSync(ZELE_DIR, { recursive: true, mode: 0o700 })
   } else {
-    // Ensure existing directory has correct permissions
     fs.chmodSync(ZELE_DIR, 0o700)
   }
 
-  // Run schema + migrations atomically via direct libsql client.
-  // Uses a single BEGIN IMMEDIATE transaction so only one write-lock
-  // acquisition is needed instead of one per DDL statement.
-  await applySchemaAndMigrate()
-
-  const adapter = new PrismaLibSql({ url: `file:${DB_PATH}` })
-  const prisma = new PrismaClient({ adapter })
-
-  // WAL mode: allows concurrent readers + single writer, persists on the DB file.
-  // busy_timeout: wait up to 15s for locks to clear instead of failing instantly.
-  // Prevents "database is locked" errors when multiple processes (TUI, watch, CLI)
-  // access the DB, or after macOS sleep/wake leaves stale locks.
-  await prisma.$executeRawUnsafe('PRAGMA journal_mode = WAL')
-  await prisma.$executeRawUnsafe('PRAGMA busy_timeout = 15000')
-
-  // Secure database files (owner read/write only)
+  const sqlite = new DatabaseSync(DB_PATH)
+  sqlite.exec('PRAGMA busy_timeout = 15000')
+  sqlite.exec('PRAGMA journal_mode = WAL')
+  sqlite.exec('PRAGMA foreign_keys = ON')
+  applySchemaAndMigrate(sqlite)
   secureDatabase()
 
-  prismaInstance = prisma
-  return prisma
+  sqliteInstance = sqlite
+  dbInstance = createDb(sqlite)
+  return dbInstance
 }
 
-/**
- * Run schema.sql DDL and column migrations inside a single BEGIN IMMEDIATE
- * transaction via the libsql client directly (bypassing Prisma).
- *
- * This acquires the SQLite write lock once for the entire init sequence
- * instead of once per statement, eliminating SQLITE_BUSY contention when
- * multiple CLI processes start concurrently.
- *
- * The libsql client is closed after init; Prisma handles all runtime queries.
- */
-async function applySchemaAndMigrate(): Promise<void> {
-  // When running from source (tsx), __dirname is src/
-  // When running from dist, __dirname is dist/ and schema.sql is at ../src/schema.sql
+function applySchemaAndMigrate(sqlite: DatabaseSync): void {
   let schemaPath = path.join(__dirname, 'schema.sql')
   if (!fs.existsSync(schemaPath)) {
     schemaPath = path.join(__dirname, '..', 'src', 'schema.sql')
@@ -105,65 +69,45 @@ async function applySchemaAndMigrate(): Promise<void> {
         .trim(),
     )
     .filter((s) => s.length > 0 && !/^CREATE\s+TABLE\s+["']?sqlite_sequence["']?\s*\(/i.test(s))
-    // Make CREATE INDEX idempotent
-    .map((s) => s.replace(/^CREATE\s+UNIQUE\s+INDEX\b(?!\s+IF)/i, 'CREATE UNIQUE INDEX IF NOT EXISTS')
-                 .replace(/^CREATE\s+INDEX\b(?!\s+IF)/i, 'CREATE INDEX IF NOT EXISTS'))
+    .map((s) =>
+      s
+        .replace(/^CREATE\s+UNIQUE\s+INDEX\b(?!\s+IF)/i, 'CREATE UNIQUE INDEX IF NOT EXISTS')
+        .replace(/^CREATE\s+INDEX\b(?!\s+IF)/i, 'CREATE INDEX IF NOT EXISTS'),
+    )
 
-  const libsql = createClient({ url: `file:${DB_PATH}` })
+  sqlite.exec('BEGIN IMMEDIATE')
   try {
-    // Set busy_timeout on the init connection too, so BEGIN IMMEDIATE
-    // waits up to 15s if another process holds the lock.
-    await libsql.execute('PRAGMA busy_timeout = 15000')
-    await libsql.execute('PRAGMA journal_mode = WAL')
-
-    // "write" mode = BEGIN IMMEDIATE: acquires the write lock upfront.
-    // All DDL + migration runs atomically; auto-rollback on any failure.
-    const tx = await libsql.transaction('write')
-    try {
-      // Schema DDL
-      for (const statement of statements) {
-        await tx.execute(statement)
-      }
-
-      // Column migrations (idempotent: ADD COLUMN for pre-IMAP/SMTP DBs).
-      // SQLite errors on duplicate columns, so check first.
-      const cols = await tx.execute(`PRAGMA table_info("Account")`)
-      const colNames = new Set(cols.rows.map((r) => String(r[1])))
-
-      if (!colNames.has('accountType')) {
-        await tx.execute(`ALTER TABLE "Account" ADD COLUMN "accountType" TEXT NOT NULL DEFAULT 'google'`)
-      }
-      if (!colNames.has('capabilities')) {
-        await tx.execute(`ALTER TABLE "Account" ADD COLUMN "capabilities" TEXT NOT NULL DEFAULT ''`)
-      }
-
-      // Backfill: existing Google accounts should have capabilities set
-      await tx.execute(`
-        UPDATE "Account"
-        SET "capabilities" = 'gmail,calendar,smtp'
-        WHERE "accountType" = 'google' AND ("capabilities" = '' OR "capabilities" IS NULL)
-      `)
-
-      await tx.commit()
-    } finally {
-      tx.close()
+    for (const statement of statements) {
+      sqlite.exec(statement)
     }
-  } finally {
-    libsql.close()
+
+    const cols = sqlite.prepare('PRAGMA table_info("Account")').all()
+    const colNames = new Set(
+      cols.flatMap((r) => (typeof r.name === 'string' ? [r.name] : [])),
+    )
+
+    if (!colNames.has('accountType')) {
+      sqlite.exec(`ALTER TABLE "Account" ADD COLUMN "accountType" TEXT NOT NULL DEFAULT 'google'`)
+    }
+    if (!colNames.has('capabilities')) {
+      sqlite.exec(`ALTER TABLE "Account" ADD COLUMN "capabilities" TEXT NOT NULL DEFAULT ''`)
+    }
+
+    sqlite.exec(`
+      UPDATE "Account"
+      SET "capabilities" = 'gmail,calendar,smtp'
+      WHERE "accountType" = 'google' AND ("capabilities" = '' OR "capabilities" IS NULL)
+    `)
+
+    sqlite.exec('COMMIT')
+  } catch (err) {
+    sqlite.exec('ROLLBACK')
+    throw err
   }
 }
 
-/**
- * Set restrictive permissions on database files.
- * SQLite WAL mode creates additional -wal and -shm files that also need protection.
- */
 function secureDatabase(): void {
-  const filesToSecure = [
-    DB_PATH,
-    `${DB_PATH}-wal`,
-    `${DB_PATH}-shm`,
-  ]
-
+  const filesToSecure = [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]
   for (const filePath of filesToSecure) {
     if (fs.existsSync(filePath)) {
       fs.chmodSync(filePath, 0o600)
@@ -171,9 +115,9 @@ function secureDatabase(): void {
   }
 }
 
-function dbBoundary<T>(fn: () => Promise<T>) {
+function dbBoundary<T>(fn: () => T) {
   return errore.tryAsync({
-    try: fn,
+    try: async () => fn(),
     catch: (err) => new DbError({ reason: String(err), cause: err }),
   })
 }
@@ -188,11 +132,10 @@ export async function getThreadSeenMessageId({
   appId: string
   threadId: string
 }) {
-  const row = await dbBoundary(async () => {
-    const prisma = await getPrisma()
-    return prisma.threadRead.findUnique({
-      where: { email_appId_threadId: { email, appId, threadId } },
-    })
+  const row = await dbBoundary(() => {
+    return getDb().query.threadRead.findFirst({
+      where: { email, appId, threadId },
+    }).sync()
   })
   if (row instanceof Error) return row
   return row?.messageId ?? null
@@ -211,34 +154,27 @@ export async function setThreadSeenMessageId({
   messageId: string
 }) {
   const seenAt = new Date()
-  return dbBoundary(async () => {
-    const prisma = await getPrisma()
-    await prisma.threadRead.upsert({
-      where: { email_appId_threadId: { email, appId, threadId } },
-      create: { email, appId, threadId, messageId, seenAt },
-      update: { messageId, seenAt },
-    })
+  return dbBoundary(() => {
+    const db = getDb()
+    db.insert(schema.threadRead)
+      .values({ email, appId, threadId, messageId, seenAt })
+      .onConflictDoUpdate({
+        target: [schema.threadRead.email, schema.threadRead.appId, schema.threadRead.threadId],
+        set: { messageId, seenAt },
+      })
+      .run()
   })
 }
 
-/**
- * Close the Prisma connection.
- *
- * Checkpoint WAL first. libsql discards uncheckpointed frames on close, so
- * mail read's ThreadRead row never survived to the next process. That made
- * every mail reply fail with "latest message was not read".
- */
-export async function closePrisma(): Promise<void> {
-  if (!prismaInstance) return
-  const prisma = prismaInstance
-  const checkpoint = await errore.tryAsync({
-    try: () => prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)'),
-    catch: (err) => new DbError({ reason: String(err), cause: err }),
-  })
-  if (checkpoint instanceof Error) {
-    console.warn('Failed to checkpoint sqlite WAL:', checkpoint.message)
+/** Close the SQLite handle. Safe to call when no DB was opened. */
+export function closeDb(): void {
+  if (!sqliteInstance) return
+  try {
+    sqliteInstance.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  } catch (err) {
+    console.warn('Failed to checkpoint sqlite WAL:', String(err))
   }
-  await prisma.$disconnect()
-  prismaInstance = null
-  initPromise = null
+  sqliteInstance.close()
+  sqliteInstance = null
+  dbInstance = null
 }

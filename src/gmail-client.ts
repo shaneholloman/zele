@@ -15,7 +15,8 @@ import { parseFrom, parseAddressList, resolveReplyRecipients, replySubject, thre
 import * as errore from 'errore'
 import { withRetry, mapConcurrent, AuthError, isAuthLikeError, ApiError, NotFoundError, EmptyThreadError, MissingDataError, abortableSleep, SelfRecipientError, AmbiguousRecipientError, UnseenLatestError } from './api-utils.js'
 import { renderEmailBody } from './output.js'
-import { getPrisma } from './db.js'
+import * as orm from 'drizzle-orm'
+import { getDb, schema } from './db.js'
 import type { AccountId } from './auth.js'
 
 // ---------------------------------------------------------------------------
@@ -274,91 +275,151 @@ export class GmailClient {
 
   private async getCachedThread(threadId: string): Promise<gmail_v1.Schema$Thread | undefined> {
     if (!this.cacheEnabled) return undefined
-    const prisma = await getPrisma()
-    const row = await prisma.thread.findUnique({
-      where: { email_appId_threadId: { email: this.account!.email, appId: this.account!.appId, threadId } },
-    })
+    const row = getDb().query.thread.findFirst({
+      where: { email: this.account!.email, appId: this.account!.appId, threadId },
+    }).sync()
     if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
     return JSON.parse(row.rawData) as gmail_v1.Schema$Thread
   }
 
   private async cacheThreadData(threadId: string, raw: gmail_v1.Schema$Thread, parsed: ThreadData): Promise<void> {
     if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.thread.upsert({
-      where: { email_appId_threadId: { email: this.account!.email, appId: this.account!.appId, threadId } },
-      create: {
-        email: this.account!.email, appId: this.account!.appId, threadId,
-        subject: parsed.subject, snippet: parsed.snippet,
-        fromEmail: parsed.from.email, fromName: parsed.from.name ?? '',
-        date: parsed.date, labelIds: parsed.labelIds.join(','),
-        hasUnread: parsed.hasUnread, msgCount: parsed.messageCount,
-        historyId: parsed.historyId,
-        rawData: JSON.stringify(raw), ttlMs: TTL.THREAD, createdAt: new Date(),
-      },
-      update: {
-        subject: parsed.subject, snippet: parsed.snippet,
-        fromEmail: parsed.from.email, fromName: parsed.from.name ?? '',
-        date: parsed.date, labelIds: parsed.labelIds.join(','),
-        hasUnread: parsed.hasUnread, msgCount: parsed.messageCount,
-        historyId: parsed.historyId,
-        rawData: JSON.stringify(raw), ttlMs: TTL.THREAD, createdAt: new Date(),
-      },
-    })
+    const now = new Date()
+    const values = {
+      email: this.account!.email,
+      appId: this.account!.appId,
+      threadId,
+      subject: parsed.subject,
+      snippet: parsed.snippet,
+      fromEmail: parsed.from.email,
+      fromName: parsed.from.name ?? '',
+      date: parsed.date,
+      labelIds: parsed.labelIds.join(','),
+      hasUnread: parsed.hasUnread,
+      msgCount: parsed.messageCount,
+      historyId: parsed.historyId,
+      rawData: JSON.stringify(raw),
+      ttlMs: TTL.THREAD,
+      createdAt: now,
+    }
+    getDb()
+      .insert(schema.thread)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [schema.thread.email, schema.thread.appId, schema.thread.threadId],
+        set: {
+          subject: values.subject,
+          snippet: values.snippet,
+          fromEmail: values.fromEmail,
+          fromName: values.fromName,
+          date: values.date,
+          labelIds: values.labelIds,
+          hasUnread: values.hasUnread,
+          msgCount: values.msgCount,
+          historyId: values.historyId,
+          rawData: values.rawData,
+          ttlMs: values.ttlMs,
+          createdAt: values.createdAt,
+        },
+      })
+      .run()
   }
 
   async invalidateThreads(threadIds: string[]): Promise<void> {
     if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.thread.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId, threadId: { in: threadIds } } })
+    if (threadIds.length === 0) return
+    getDb()
+      .delete(schema.thread)
+      .where(
+        orm.and(
+          orm.eq(schema.thread.email, this.account!.email),
+          orm.eq(schema.thread.appId, this.account!.appId),
+          orm.inArray(schema.thread.threadId, threadIds),
+        ),
+      )
+      .run()
   }
 
   async invalidateThread(threadId: string): Promise<void> {
     if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.thread.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId, threadId } })
+    getDb()
+      .delete(schema.thread)
+      .where(
+        orm.and(
+          orm.eq(schema.thread.email, this.account!.email),
+          orm.eq(schema.thread.appId, this.account!.appId),
+          orm.eq(schema.thread.threadId, threadId),
+        ),
+      )
+      .limit(1)
+      .run()
   }
 
   private async getCachedLabels(): Promise<gmail_v1.Schema$Label[] | undefined> {
     if (!this.cacheEnabled) return undefined
-    const prisma = await getPrisma()
-    const row = await prisma.label.findUnique({ where: { email_appId: { email: this.account!.email, appId: this.account!.appId } } })
+    const row = getDb().query.label.findFirst({
+      where: { email: this.account!.email, appId: this.account!.appId },
+    }).sync()
     if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
     return JSON.parse(row.rawData) as gmail_v1.Schema$Label[]
   }
 
   private async cacheLabelsData(raw: gmail_v1.Schema$Label[]): Promise<void> {
     if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.label.upsert({
-      where: { email_appId: { email: this.account!.email, appId: this.account!.appId } },
-      create: { email: this.account!.email, appId: this.account!.appId, rawData: JSON.stringify(raw), ttlMs: TTL.LABELS, createdAt: new Date() },
-      update: { rawData: JSON.stringify(raw), ttlMs: TTL.LABELS, createdAt: new Date() },
-    })
+    const now = new Date()
+    getDb()
+      .insert(schema.label)
+      .values({
+        email: this.account!.email,
+        appId: this.account!.appId,
+        rawData: JSON.stringify(raw),
+        ttlMs: TTL.LABELS,
+        createdAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [schema.label.email, schema.label.appId],
+        set: { rawData: JSON.stringify(raw), ttlMs: TTL.LABELS, createdAt: now },
+      })
+      .run()
   }
 
   async invalidateLabels(): Promise<void> {
     if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.label.deleteMany({ where: { email: this.account!.email, appId: this.account!.appId } })
+    getDb()
+      .delete(schema.label)
+      .where(
+        orm.and(orm.eq(schema.label.email, this.account!.email), orm.eq(schema.label.appId, this.account!.appId)),
+      )
+      .limit(1)
+      .run()
   }
 
   private async getCachedProfile(): Promise<{ emailAddress: string; messagesTotal: number; threadsTotal: number; historyId: string } | undefined> {
     if (!this.cacheEnabled) return undefined
-    const prisma = await getPrisma()
-    const row = await prisma.profile.findUnique({ where: { email_appId: { email: this.account!.email, appId: this.account!.appId } } })
+    const row = getDb().query.profile.findFirst({
+      where: { email: this.account!.email, appId: this.account!.appId },
+    }).sync()
     if (!row || isExpired(row.createdAt, row.ttlMs)) return undefined
     return { emailAddress: row.emailAddress, messagesTotal: row.messagesTotal, threadsTotal: row.threadsTotal, historyId: row.historyId }
   }
 
   private async cacheProfileData(profile: { emailAddress: string; messagesTotal: number; threadsTotal: number; historyId: string }): Promise<void> {
     if (!this.cacheEnabled) return
-    const prisma = await getPrisma()
-    await prisma.profile.upsert({
-      where: { email_appId: { email: this.account!.email, appId: this.account!.appId } },
-      create: { email: this.account!.email, appId: this.account!.appId, ...profile, ttlMs: TTL.PROFILE, createdAt: new Date() },
-      update: { ...profile, ttlMs: TTL.PROFILE, createdAt: new Date() },
-    })
+    const now = new Date()
+    getDb()
+      .insert(schema.profile)
+      .values({
+        email: this.account!.email,
+        appId: this.account!.appId,
+        ...profile,
+        ttlMs: TTL.PROFILE,
+        createdAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [schema.profile.email, schema.profile.appId],
+        set: { ...profile, ttlMs: TTL.PROFILE, createdAt: now },
+      })
+      .run()
   }
 
   // =========================================================================
@@ -2360,20 +2421,21 @@ const WATCH_FOLDER_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 async function getLastHistoryId(account: AccountId): Promise<string | undefined> {
-  const prisma = await getPrisma()
-  const row = await prisma.syncState.findUnique({
-    where: { email_appId_key: { email: account.email, appId: account.appId, key: 'history_id' } },
-  })
+  const row = getDb().query.syncState.findFirst({
+    where: { email: account.email, appId: account.appId, key: 'history_id' },
+  }).sync()
   return row?.value
 }
 
 async function setLastHistoryId(account: AccountId, historyId: string): Promise<void> {
-  const prisma = await getPrisma()
-  await prisma.syncState.upsert({
-    where: { email_appId_key: { email: account.email, appId: account.appId, key: 'history_id' } },
-    create: { email: account.email, appId: account.appId, key: 'history_id', value: historyId },
-    update: { value: historyId },
-  })
+  getDb()
+    .insert(schema.syncState)
+    .values({ email: account.email, appId: account.appId, key: 'history_id', value: historyId })
+    .onConflictDoUpdate({
+      target: [schema.syncState.email, schema.syncState.appId, schema.syncState.key],
+      set: { value: historyId },
+    })
+    .run()
 }
 
 // ---------------------------------------------------------------------------

@@ -26,18 +26,18 @@ you must do tuistory --help to see how to use it. this is the only way to try ou
 
 ## database
 
-zele uses a single SQLite database at `~/.zele/zele.db` as the source of truth for CLI state.
+zele uses a single SQLite database at `~/.zele/sqlite.db` as the source of truth for CLI state.
 
-all persistent state is stored in this DB via Prisma models:
-- `accounts`: OAuth tokens per email account
-- `thread_lists` + `threads`: cached mail list/read payloads
-- `labels` + `label_counts`: cached label metadata and unread counters
-- `profiles`: cached account profile data
-- `sync_states`: misc per-account sync metadata (for example history IDs)
+Use Drizzle + `node:sqlite` (`DatabaseSync`). Do not use Prisma or `@libsql/client` for this file DB. Their local adapters can leave writes in a zombie transaction that rolls back on process exit.
 
-## prisma
+Schema lives in `src/schema.ts`. Table and column names must match the existing file (PascalCase tables, camelCase columns). Runtime DDL is `src/schema.sql`, applied on startup.
 
-prisma version in package.json MUST be pinned. no ^. this makes sure the generated prisma code is compatible with the prisma client used in the npm package
+Tables:
+- `Account`: OAuth / IMAP tokens per email + appId
+- `Thread`: cached mail read payloads
+- `Label` / `Profile` / `CalendarList`: cached API payloads
+- `ThreadRead`: last message shown by `mail read` (not a cache)
+- `SyncState`: per-account sync cursors such as Gmail history ids
 
 ## changesets
 

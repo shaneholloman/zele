@@ -12,7 +12,8 @@ import { spawn } from 'node:child_process'
 import { OAuth2Client, type Credentials } from 'google-auth-library'
 import fkill from 'fkill'
 import { colors as pc } from 'goke'
-import { getPrisma } from './db.js'
+import * as orm from 'drizzle-orm'
+import { getDb, schema } from './db.js'
 import { GmailClient } from './gmail-client.js'
 import { CalendarClient } from './calendar-client.js'
 import * as errore from 'errore'
@@ -575,24 +576,28 @@ export async function login(
   const email = profile.emailAddress
 
   // Upsert account in DB
-  const prisma = await getPrisma()
+  const db = getDb()
   const googleCapabilities = 'gmail,calendar,smtp'
+  const now = new Date()
   const upsertResult = await errore.tryAsync({
-    try: () =>
-      prisma.account.upsert({
-        where: { email_appId: { email, appId: resolved.clientId } },
-        create: {
+    try: async () => {
+      db.insert(schema.account)
+        .values({
           email,
           appId: resolved.clientId,
           accountType: 'google',
           capabilities: googleCapabilities,
           accountStatus: 'active',
           tokens: JSON.stringify(tokens),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-        update: { tokens: JSON.stringify(tokens), capabilities: googleCapabilities, updatedAt: new Date() },
-      }),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [schema.account.email, schema.account.appId],
+          set: { tokens: JSON.stringify(tokens), capabilities: googleCapabilities, updatedAt: now },
+        })
+        .run()
+    },
     catch: (err) => new Error(`Failed to save account ${email}`, { cause: err }),
   })
   if (upsertResult instanceof Error) return upsertResult
@@ -709,27 +714,31 @@ export async function loginImap(
   }
 
   // Save to DB
-  const prisma = await getPrisma()
+  const db = getDb()
+  const now = new Date()
   const upsertResult = await errore.tryAsync({
-    try: () =>
-      prisma.account.upsert({
-        where: { email_appId: { email, appId: IMAP_SMTP_APP_ID } },
-        create: {
+    try: async () => {
+      db.insert(schema.account)
+        .values({
           email,
           appId: IMAP_SMTP_APP_ID,
           accountType: 'imap_smtp',
           capabilities: capabilities.join(','),
           accountStatus: 'active',
           tokens: JSON.stringify(credentials),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-        update: {
-          capabilities: capabilities.join(','),
-          tokens: JSON.stringify(credentials),
-          updatedAt: new Date(),
-        },
-      }),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [schema.account.email, schema.account.appId],
+          set: {
+            capabilities: capabilities.join(','),
+            tokens: JSON.stringify(credentials),
+            updatedAt: now,
+          },
+        })
+        .run()
+    },
     catch: (err) => new Error(`Failed to save account ${email}`, { cause: err }),
   })
   if (upsertResult instanceof Error) return upsertResult
@@ -742,10 +751,11 @@ export async function loginImap(
 // ---------------------------------------------------------------------------
 
 export async function logout(email: string): Promise<void | Error> {
-  const prisma = await getPrisma()
-  // Delete all app_id entries for this email (logout removes all credentials for the email)
+  const db = getDb()
   const result = await errore.tryAsync({
-    try: () => prisma.account.deleteMany({ where: { email } }),
+    try: async () => {
+      db.delete(schema.account).where(orm.eq(schema.account.email, email)).run()
+    },
     catch: (err) => new Error(`Failed to remove credentials for ${email}`, { cause: err }),
   })
   if (result instanceof Error) return result
@@ -756,8 +766,9 @@ export async function logout(email: string): Promise<void | Error> {
 // ---------------------------------------------------------------------------
 
 export async function listAccounts(): Promise<AccountId[]> {
-  const prisma = await getPrisma()
-  const rows = await prisma.account.findMany({ select: { email: true, appId: true, accountType: true, capabilities: true } })
+  const rows = getDb().query.account.findMany({
+    columns: { tokens: false },
+  }).sync()
   return rows.map((r) => ({
     email: r.email,
     appId: r.appId,
@@ -776,10 +787,10 @@ export async function listAccounts(): Promise<AccountId[]> {
  * Uses the stored app_id to create the OAuth2 client with the correct credentials.
  */
 async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
-  const prisma = await getPrisma()
-  const row = await prisma.account.findUnique({
-    where: { email_appId: { email: account.email, appId: account.appId } },
-  })
+  const db = getDb()
+  const row = db.query.account.findFirst({
+    where: { email: account.email, appId: account.appId },
+  }).sync()
   if (!row) {
     throw new Error(`No account found for ${account.email}. Run: zele login`)
   }
@@ -795,10 +806,11 @@ async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
     const { credentials } = await oauth2Client.refreshAccessToken()
     const merged = { ...tokens, ...credentials }
     oauth2Client.setCredentials(merged)
-    await prisma.account.update({
-      where: { email_appId: { email: account.email, appId: account.appId } },
-      data: { tokens: JSON.stringify(merged), updatedAt: new Date() },
-    })
+    db.update(schema.account)
+      .set({ tokens: JSON.stringify(merged), updatedAt: new Date() })
+      .where(orm.and(orm.eq(schema.account.email, account.email), orm.eq(schema.account.appId, account.appId)))
+      .limit(1)
+      .run()
   }
 
   return oauth2Client
@@ -835,13 +847,13 @@ export async function getClients(
     throw new Error(`No matching accounts. Available: ${available}`)
   }
 
-  const prisma = await getPrisma()
+  const db = getDb()
   const results = await Promise.all(
     filtered.map(async (account): Promise<ClientEntry> => {
       if (account.accountType === 'imap_smtp') {
-        const row = await prisma.account.findUnique({
-          where: { email_appId: { email: account.email, appId: account.appId } },
-        })
+        const row = db.query.account.findFirst({
+          where: { email: account.email, appId: account.appId },
+        }).sync()
         if (!row) throw new Error(`No account found for ${account.email}. Run: zele login`)
         const credentials: ImapSmtpCredentials = JSON.parse(row.tokens)
         return {
@@ -982,8 +994,7 @@ export interface AuthStatus {
 }
 
 export async function getAuthStatuses(): Promise<AuthStatus[]> {
-  const prisma = await getPrisma()
-  const rows = await prisma.account.findMany()
+  const rows = getDb().query.account.findMany().sync()
 
   return rows.map((row) => {
     const accountType = row.accountType as AccountType

@@ -26,7 +26,7 @@ import { registerCalendarCommands } from './commands/calendar.js'
 import { registerWatchCommands } from './commands/watch.js'
 import { registerFilterCommands } from './commands/filter.js'
 import { handleCommandError } from './output.js'
-import { closePrisma } from './db.js'
+import { closeDb } from './db.js'
 
 const cli: ZeleCli = goke('zele').option(
   '--account [account]',
@@ -119,4 +119,4 @@ cli.version(version)
 // Parse & run
 // ---------------------------------------------------------------------------
 
-void cli.parse().finally(() => closePrisma())
+void cli.parse().finally(() => closeDb())
