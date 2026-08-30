@@ -2,14 +2,14 @@
     <br/>
     <br/>
     <h3>zele</h3>
-    <p>Email & Calendar CLI — Gmail, IMAP/SMTP, Google Calendar. For you and your agents</p>
+    <p>Email & Calendar CLI — Gmail, Outlook, IMAP/SMTP, Google Calendar. For you and your agents</p>
     <br/>
     <br/>
 </div>
 
 ## Install
 
-Multi-account email and calendar client supporting **Google OAuth** and **IMAP/SMTP** (Fastmail, Outlook, any provider). SQLite cache, YAML output.
+Multi-account email and calendar client supporting **Google OAuth**, **Microsoft OAuth** (Outlook / Hotmail), and **IMAP/SMTP** (Fastmail, any provider). SQLite cache, YAML output.
 
 All CLI commands work with **Node.js** (v22.16+). The interactive TUI (`zele` with no subcommand) requires [Bun](https://bun.sh) and will auto-spawn it if available.
 
@@ -52,11 +52,22 @@ tmux capture-pane -t zele-login -p
 tmux kill-session -t zele-login
 ```
 
-IMAP/SMTP login is non-interactive and requires no tmux wrapper.
+IMAP/SMTP password login is non-interactive and requires no tmux wrapper. Microsoft OAuth login is interactive, same as Google.
+
+### Outlook / Hotmail / Microsoft 365
+
+Microsoft disabled password IMAP on Outlook.com. Use browser OAuth (XOAUTH2):
+
+```bash
+zele login microsoft
+zele login microsoft --email you@outlook.com
+```
+
+This uses Thunderbird's public Microsoft client ID and a localhost callback, same pattern as Google login.
 
 ### IMAP/SMTP accounts
 
-For non-Google providers (Fastmail, Outlook, Gmail with app passwords, any IMAP server):
+For non-Google, non-Microsoft providers (Fastmail, Gmail with app passwords, any IMAP server):
 
 ```bash
 # Fastmail
@@ -72,13 +83,6 @@ zele login imap \
   --imap-host imap.gmail.com --imap-port 993 \
   --smtp-host smtp.gmail.com --smtp-port 465 \
   --password "your-app-password"
-
-# Outlook
-zele login imap \
-  --email you@outlook.com \
-  --imap-host outlook.office365.com --imap-port 993 \
-  --smtp-host smtp-mail.outlook.com --smtp-port 587 \
-  --password "your-password"
 
 # IMAP-only (no sending)
 zele login imap \
@@ -311,7 +315,7 @@ All structured data is output as YAML. In TTY mode, keys are colored for readabi
 
 **Never use the TUI.** Running `zele` with no subcommand launches a human-facing terminal UI for browsing email. Agents must use the CLI subcommands (`zele mail list`, `zele cal events`, etc.) which output structured YAML that can be parsed and piped.
 
-**Always run `zele whoami` before account-scoped commands.** When the user asks to check email "for a specific account" (e.g. "my work email", "my personal Gmail"), run `zele whoami` first to list connected accounts and find the exact address to pass to `--account`. Never guess the email — pick it from the `whoami` output. The output also shows account type (`google` or `imap_smtp`) and capabilities so you know which features are available.
+**Always run `zele whoami` before account-scoped commands.** When the user asks to check email "for a specific account" (e.g. "my work email", "my personal Gmail"), run `zele whoami` first to list connected accounts and find the exact address to pass to `--account`. Never guess the email — pick it from the `whoami` output. The output also shows account type (`google` or `imap_smtp`) and capabilities so you know which features are available. Outlook accounts show as `imap_smtp` after `zele login microsoft`.
 
 ```bash
 # list connected accounts first

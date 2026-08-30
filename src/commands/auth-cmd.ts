@@ -1,29 +1,29 @@
-// Auth commands: login, login imap, logout, whoami.
-// Manages authentication for zele (Google OAuth and IMAP/SMTP credentials).
+// Auth commands: login, login imap, login microsoft, logout, whoami.
+// Manages authentication for zele (Google OAuth, Microsoft OAuth, IMAP/SMTP).
 // Supports multiple accounts: login adds accounts, logout removes one.
 
 import type { ZeleCli } from '../cli-types.js'
 import { z } from 'zod'
 import { colors as pc, isAgent } from 'goke'
 import * as clack from '@clack/prompts'
-import { login, loginImap, logout, listAccounts, getAuthStatuses } from '../auth.js'
+import { login, loginImap, loginMicrosoft, logout, listAccounts, getAuthStatuses } from '../auth.js'
 import { closeDb } from '../db.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
 
 export function registerAuthCommands(cli: ZeleCli) {
   cli
-    .command('login', 'Authenticate with Google (opens browser) or show IMAP/SMTP login instructions')
+    .command('login', 'Authenticate with Google, Outlook, or IMAP/SMTP')
     .option(
       '--method <method>',
-      z.enum(['google', 'imap']).optional().describe('Authentication method (google or imap)'),
+      z.enum(['google', 'imap', 'microsoft']).optional().describe('Authentication method (google, imap, or microsoft)'),
     )
     .action(async (options) => {
       let method = options.method
 
       if (!method) {
         if (isAgent || !process.stdin.isTTY) {
-          out.error('Run non-interactively with: zele login --method google|imap')
+          out.error('Run non-interactively with: zele login --method google|imap|microsoft')
           process.exit(1)
         }
 
@@ -31,6 +31,7 @@ export function registerAuthCommands(cli: ZeleCli) {
           message: 'Choose authentication method',
           options: [
             { value: 'google', label: 'Google', hint: 'opens browser for OAuth' },
+            { value: 'microsoft', label: 'Outlook / Hotmail', hint: 'opens browser for Microsoft OAuth' },
             { value: 'imap', label: 'Other', hint: 'IMAP/SMTP with password' },
           ],
         })
@@ -47,6 +48,23 @@ export function registerAuthCommands(cli: ZeleCli) {
         out.hint('Run: zele login imap')
         out.hint('It will guide you through setup interactively, or pass all flags for non-interactive use.')
         return
+      }
+
+      if (method === 'microsoft') {
+        if (!process.stdout.isTTY) {
+          out.error(
+            'zele login --method microsoft needs an interactive terminal and must stay alive while you approve the browser login.\n\n' +
+            'Run it in a background terminal session like tuistory or tmux, then wait for the URL/code:\n\n' +
+            '  bunx tuistory launch "zele login --method microsoft" -s zele-login\n' +
+            '  bunx tuistory -s zele-login wait "/code:|https?:\\\\/\\\\//i" --timeout 15000',
+          )
+          process.exit(1)
+        }
+        const msResult = await loginMicrosoft()
+        if (msResult instanceof Error) handleCommandError(msResult)
+        out.success(`Authenticated as ${msResult.email}`)
+        await closeDb()
+        process.exit(0)
       }
 
       // Google OAuth flow — needs an interactive terminal and must stay alive
@@ -114,16 +132,24 @@ export function registerAuthCommands(cli: ZeleCli) {
           options: [
             { value: 'fastmail', label: 'Fastmail', hint: 'imap.fastmail.com' },
             { value: 'gmail', label: 'Gmail', hint: 'imap.gmail.com (app password required)' },
-            { value: 'outlook', label: 'Outlook / Hotmail', hint: 'outlook.office365.com' },
+            { value: 'outlook', label: 'Outlook / Hotmail', hint: 'use zele login microsoft (password IMAP is disabled)' },
             { value: 'custom', label: 'Custom', hint: 'enter IMAP/SMTP hosts manually' },
           ],
         })
         if (clack.isCancel(provider)) process.exit(0)
 
-        const presets: Record<string, { imapHost: string; imapPort: string; smtpHost: string; smtpPort: string }> = {
+        if (provider === 'outlook') {
+          out.hint('Outlook password IMAP is disabled. Starting Microsoft OAuth...')
+          const result = await loginMicrosoft({ email })
+          if (result instanceof Error) handleCommandError(result)
+          out.success(`Authenticated as ${result.email}`)
+          await closeDb()
+          process.exit(0)
+        }
+
+        const presets = {
           fastmail: { imapHost: 'imap.fastmail.com', imapPort: '993', smtpHost: 'smtp.fastmail.com', smtpPort: '465' },
           gmail: { imapHost: 'imap.gmail.com', imapPort: '993', smtpHost: 'smtp.gmail.com', smtpPort: '465' },
-          outlook: { imapHost: 'outlook.office365.com', imapPort: '993', smtpHost: 'smtp-mail.outlook.com', smtpPort: '587' },
         }
 
         if (provider !== 'custom') {
@@ -212,6 +238,26 @@ export function registerAuthCommands(cli: ZeleCli) {
 
       const caps = smtpHost ? 'IMAP + SMTP' : 'IMAP only'
       out.success(`Authenticated ${result.email} (${caps})`)
+      await closeDb()
+      process.exit(0)
+    })
+
+  cli
+    .command('login microsoft', 'Add an Outlook / Hotmail / Microsoft 365 account via OAuth')
+    .option('--email [email]', z.string().optional().describe('Email address (login hint)'))
+    .action(async (options) => {
+      if (!process.stdout.isTTY) {
+        out.error(
+          'zele login microsoft needs an interactive terminal and must stay alive while you approve the browser login.\n\n' +
+          'Run it in a background terminal session like tuistory or tmux, then wait for the URL/code:\n\n' +
+          '  bunx tuistory launch "zele login microsoft" -s zele-login\n' +
+          '  bunx tuistory -s zele-login wait "/code:|https?:\\\\/\\\\//i" --timeout 15000',
+        )
+        process.exit(1)
+      }
+      const result = await loginMicrosoft({ email: options.email })
+      if (result instanceof Error) handleCommandError(result)
+      out.success(`Authenticated as ${result.email}`)
       await closeDb()
       process.exit(0)
     })

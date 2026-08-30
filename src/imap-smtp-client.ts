@@ -1,4 +1,4 @@
-// IMAP/SMTP email client for non-Google accounts.
+// IMAP/SMTP email client for non-Google accounts, including Outlook XOAUTH2.
 // Mirrors the GmailClient method signatures and return types so commands
 // can work with both client types without major rewrites.
 // Each IMAP operation opens a fresh connection (connect → operate → logout)
@@ -136,12 +136,14 @@ function imapBoundary<T>(email: string, fn: () => Promise<T>) {
 export class ImapSmtpClient {
   private imapCreds: ImapCredentials | undefined
   private smtpCreds: SmtpCredentials | undefined
+  private oauthAccessToken: string | undefined
   private account: AccountId
   private smtpTransporter: Transporter | null = null
 
   constructor({ credentials, account }: { credentials: ImapSmtpCredentials; account: AccountId }) {
     this.imapCreds = credentials.imap
     this.smtpCreds = credentials.smtp
+    this.oauthAccessToken = credentials.oauth?.accessToken
     this.account = account
   }
 
@@ -151,11 +153,14 @@ export class ImapSmtpClient {
 
   private createImapClient(): ImapFlow {
     if (!this.imapCreds) throw new Error('IMAP not configured for this account')
+    const auth = this.oauthAccessToken
+      ? { user: this.imapCreds.user, accessToken: this.oauthAccessToken }
+      : { user: this.imapCreds.user, pass: this.imapCreds.password ?? '' }
     return new ImapFlow({
       host: this.imapCreds.host,
       port: this.imapCreds.port,
       secure: this.imapCreds.tls,
-      auth: { user: this.imapCreds.user, pass: this.imapCreds.password },
+      auth,
       logger: false,
     })
   }
@@ -219,7 +224,9 @@ export class ImapSmtpClient {
       host: this.smtpCreds.host,
       port: this.smtpCreds.port,
       secure: this.smtpCreds.tls,
-      auth: { user: this.smtpCreds.user, pass: this.smtpCreds.password },
+      auth: this.oauthAccessToken
+        ? { type: 'OAuth2', user: this.smtpCreds.user, accessToken: this.oauthAccessToken }
+        : { user: this.smtpCreds.user, pass: this.smtpCreds.password ?? '' },
     })
     return this.smtpTransporter
   }

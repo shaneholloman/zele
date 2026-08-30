@@ -1,10 +1,9 @@
-// OAuth2 authentication module for zele.
+// Authentication module for zele.
 // Multi-account support: tokens are stored in the Drizzle-managed SQLite DB
-// (accounts table) keyed by (email, app_id). Supports login (browser OAuth),
-// per-account token refresh, and helpers to get authenticated GmailClient
-// instances for one or all accounts.
-// app_id is the Google OAuth client ID used during login, enabling future
-// support for multiple OAuth apps per email.
+// (accounts table) keyed by (email, app_id). Supports Google browser OAuth,
+// Microsoft Outlook XOAUTH2, IMAP/SMTP passwords, per-account token refresh,
+// and helpers to get authenticated GmailClient / ImapSmtpClient instances.
+// app_id is the OAuth client ID used during login (Google) or `imap_smtp`.
 
 import http from 'node:http'
 import readline from 'node:readline'
@@ -19,6 +18,16 @@ import { CalendarClient } from './calendar-client.js'
 import * as errore from 'errore'
 import { AuthError, ApiError, UnsupportedError } from './api-utils.js'
 import { ImapSmtpClient } from './imap-smtp-client.js'
+import {
+  MICROSOFT_REDIRECT_PORT,
+  buildMicrosoftAuthUrl,
+  createPkce,
+  emailFromIdToken,
+  exchangeMicrosoftCode,
+  getMicrosoftAuthCode,
+  refreshMicrosoftToken,
+  type MicrosoftOAuthTokens,
+} from './microsoft-oauth.js'
 
 // ---------------------------------------------------------------------------
 // Account types
@@ -32,7 +41,7 @@ export interface ImapCredentials {
   host: string
   port: number
   user: string
-  password: string
+  password?: string
   tls: boolean
 }
 
@@ -40,7 +49,7 @@ export interface SmtpCredentials {
   host: string
   port: number
   user: string
-  password: string
+  password?: string
   tls: boolean
 }
 
@@ -48,6 +57,7 @@ export interface SmtpCredentials {
 export interface ImapSmtpCredentials {
   imap?: ImapCredentials
   smtp?: SmtpCredentials
+  oauth?: MicrosoftOAuthTokens
 }
 
 /** Capabilities an account can have. */
@@ -746,6 +756,127 @@ export async function loginImap(
   return { email, appId: IMAP_SMTP_APP_ID }
 }
 
+const OUTLOOK_IMAP_HOST = 'outlook.office365.com'
+const OUTLOOK_SMTP_HOST = 'smtp-mail.outlook.com'
+
+/**
+ * Login to Outlook.com / Hotmail / Microsoft 365 via OAuth (XOAUTH2).
+ * Password IMAP is disabled on those servers.
+ */
+export async function loginMicrosoft(
+  options?: BrowserAuthOptions & { email?: string },
+): Promise<{ email: string; appId: string } | Error> {
+  const { verifier, challenge } = createPkce()
+  const redirectUri = `http://localhost:${MICROSOFT_REDIRECT_PORT}`
+  const authUrl = buildMicrosoftAuthUrl({
+    challenge,
+    redirectUri,
+    loginHint: options?.email,
+  })
+
+  const code = await getMicrosoftAuthCode({
+    authUrl,
+    port: MICROSOFT_REDIRECT_PORT,
+    openBrowser: options?.openBrowser,
+  })
+  if (code instanceof Error) return code
+
+  if (options?.showInstructions ?? true) {
+    console.error(pc.dim('Got authorization code, exchanging for tokens...'))
+  }
+
+  const oauth = await exchangeMicrosoftCode({ code, verifier, redirectUri })
+  if (oauth instanceof Error) return oauth
+
+  const email = options?.email ?? (oauth.idToken ? emailFromIdToken(oauth.idToken) : undefined)
+  if (!email) return new Error('Could not determine Microsoft account email from the token. Pass --email.')
+
+  const credentials: ImapSmtpCredentials = {
+    imap: {
+      host: OUTLOOK_IMAP_HOST,
+      port: 993,
+      user: email,
+      tls: true,
+    },
+    smtp: {
+      host: OUTLOOK_SMTP_HOST,
+      port: 587,
+      user: email,
+      tls: false,
+    },
+    oauth,
+  }
+
+  const { ImapFlow } = await import('imapflow')
+  const testClient = new ImapFlow({
+    host: OUTLOOK_IMAP_HOST,
+    port: 993,
+    secure: true,
+    auth: { user: email, accessToken: oauth.accessToken },
+    logger: false,
+  })
+  const imapTest = await errore.tryAsync({
+    try: async () => {
+      await testClient.connect()
+      await testClient.logout()
+    },
+    catch: (err) => new AuthError({ email, reason: `IMAP XOAUTH2 failed: ${String(err)}` }),
+  })
+  if (imapTest instanceof Error) return imapTest
+
+  const nodemailer = await import('nodemailer')
+  const transporter = nodemailer.default.createTransport({
+    host: OUTLOOK_SMTP_HOST,
+    port: 587,
+    secure: false,
+    auth: { type: 'OAuth2', user: email, accessToken: oauth.accessToken },
+  })
+  const smtpTest = await errore.tryAsync({
+    try: () => transporter.verify(),
+    catch: (err) => new AuthError({ email, reason: `SMTP XOAUTH2 failed: ${String(err)}` }),
+  })
+  if (smtpTest instanceof Error) return smtpTest
+
+  const db = getDb()
+  const now = new Date()
+  const upsertResult = await errore.tryAsync({
+    try: async () => {
+      db.insert(schema.account)
+        .values({
+          email,
+          appId: IMAP_SMTP_APP_ID,
+          accountType: 'imap_smtp',
+          capabilities: 'imap,smtp',
+          accountStatus: 'active',
+          tokens: JSON.stringify(credentials),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [schema.account.email, schema.account.appId],
+          set: {
+            capabilities: 'imap,smtp',
+            tokens: JSON.stringify(credentials),
+            updatedAt: now,
+          },
+        })
+        .run()
+    },
+    catch: (err) => new Error(`Failed to save account ${email}`, { cause: err }),
+  })
+  if (upsertResult instanceof Error) return upsertResult
+
+  return { email, appId: IMAP_SMTP_APP_ID }
+}
+
+async function refreshImapOauth(credentials: ImapSmtpCredentials): Promise<ImapSmtpCredentials | Error> {
+  if (!credentials.oauth) return credentials
+  if (credentials.oauth.expiry > Date.now() + 60_000) return credentials
+  const refreshed = await refreshMicrosoftToken(credentials.oauth.refreshToken)
+  if (refreshed instanceof Error) return refreshed
+  return { ...credentials, oauth: refreshed }
+}
+
 // ---------------------------------------------------------------------------
 // Logout: remove account from DB
 // ---------------------------------------------------------------------------
@@ -854,7 +985,15 @@ export async function getClients(
           where: { email: account.email, appId: account.appId },
         }).sync()
         if (!row) throw new Error(`No account found for ${account.email}. Run: zele login`)
-        const credentials: ImapSmtpCredentials = JSON.parse(row.tokens)
+        const stored: ImapSmtpCredentials = JSON.parse(row.tokens)
+        const credentials = await refreshImapOauth(stored)
+        if (credentials instanceof Error) throw credentials
+        if (credentials.oauth && credentials.oauth !== stored.oauth) {
+          db.update(schema.account)
+            .set({ tokens: JSON.stringify(credentials), updatedAt: new Date() })
+            .where(orm.and(orm.eq(schema.account.email, account.email), orm.eq(schema.account.appId, account.appId)))
+            .run()
+        }
         return {
           email: account.email,
           appId: account.appId,
