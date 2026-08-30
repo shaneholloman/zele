@@ -13,7 +13,7 @@ import * as errore from 'errore'
 import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, SelfRecipientError, AmbiguousRecipientError, UnseenLatestError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
 import { resolveReplyRecipients, replySubject, threadAnchor, checkThreadLatestSeen, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import { renderEmailBody } from './output.js'
-import type { AccountId, ImapSmtpCredentials, ImapCredentials, SmtpCredentials } from './auth.js'
+import type { AccountId, ImapSmtpCredentials } from './auth.js'
 import type {
   ThreadListResult,
   ThreadListItem,
@@ -115,14 +115,24 @@ function matchesQuery(msg: ParsedMessage, query: string): boolean {
   return true
 }
 
+function isImapAuthFailure(err: Error): boolean {
+  const e = err as { authenticationFailed?: boolean; serverResponseCode?: string; response?: string }
+  if (e.authenticationFailed === true) return true
+  if (e.serverResponseCode === 'AUTHENTICATIONFAILED') return true
+  if (typeof e.response === 'string' && e.response.includes('AUTHENTICATIONFAILED')) return true
+  const msg = String(err)
+  return msg.includes('Authentication') || msg.includes('AUTHENTICATIONFAILED') || msg.includes('LOGIN') || msg.includes('Invalid credentials')
+}
+
 /** Boundary helper for imapflow calls — converts auth errors to typed values. */
 function imapBoundary<T>(email: string, fn: () => Promise<T>) {
   return errore.tryAsync({
     try: fn,
     catch: (err) => {
       const msg = String(err)
-      if (msg.includes('Authentication') || msg.includes('AUTHENTICATIONFAILED') || msg.includes('LOGIN') || msg.includes('Invalid credentials')) {
-        return new AuthError({ email, reason: msg })
+      if (isImapAuthFailure(err)) {
+        const e = err as { response?: string }
+        return new AuthError({ email, reason: e.response ?? msg })
       }
       return new ApiError({ reason: msg, cause: err })
     },
@@ -134,32 +144,37 @@ function imapBoundary<T>(email: string, fn: () => Promise<T>) {
 // ---------------------------------------------------------------------------
 
 export class ImapSmtpClient {
-  private imapCreds: ImapCredentials | undefined
-  private smtpCreds: SmtpCredentials | undefined
-  private oauthAccessToken: string | undefined
   private account: AccountId
+  private loadCredentials: () => Promise<ImapSmtpCredentials | AuthError>
   private smtpTransporter: Transporter | null = null
+  private smtpAccessToken: string | undefined
 
-  constructor({ credentials, account }: { credentials: ImapSmtpCredentials; account: AccountId }) {
-    this.imapCreds = credentials.imap
-    this.smtpCreds = credentials.smtp
-    this.oauthAccessToken = credentials.oauth?.accessToken
+  constructor({
+    account,
+    loadCredentials,
+  }: {
+    account: AccountId
+    loadCredentials: () => Promise<ImapSmtpCredentials | AuthError>
+  }) {
     this.account = account
+    this.loadCredentials = loadCredentials
   }
 
   // =========================================================================
   // IMAP connection helpers
   // =========================================================================
 
-  private createImapClient(): ImapFlow {
-    if (!this.imapCreds) throw new Error('IMAP not configured for this account')
-    const auth = this.oauthAccessToken
-      ? { user: this.imapCreds.user, accessToken: this.oauthAccessToken }
-      : { user: this.imapCreds.user, pass: this.imapCreds.password ?? '' }
+  private async createImapClient(): Promise<ImapFlow | AuthError> {
+    const creds = await this.loadCredentials()
+    if (creds instanceof Error) return creds
+    if (!creds.imap) return new AuthError({ email: this.account.email, reason: 'IMAP not configured for this account' })
+    const auth = creds.oauth
+      ? { user: creds.imap.user, accessToken: creds.oauth.accessToken }
+      : { user: creds.imap.user, pass: creds.imap.password }
     return new ImapFlow({
-      host: this.imapCreds.host,
-      port: this.imapCreds.port,
-      secure: this.imapCreds.tls,
+      host: creds.imap.host,
+      port: creds.imap.port,
+      secure: creds.imap.tls,
       auth,
       logger: false,
     })
@@ -207,7 +222,11 @@ export class ImapSmtpClient {
    *  The entire callback is wrapped in imapBoundary so any IMAP error
    *  (getMailboxLock, search, fetch, etc.) becomes an error value. */
   private async withImap<T>(fn: (client: ImapFlow) => Promise<T>): Promise<T | AuthError | ApiError> {
-    const client = this.createImapClient()
+    const client = await this.createImapClient()
+    if (client instanceof UnsupportedError) {
+      return new AuthError({ email: this.account.email, reason: client.message })
+    }
+    if (client instanceof Error) return client
     const connectResult = await imapBoundary(this.account.email, () => client.connect())
     if (connectResult instanceof Error) return connectResult
 
@@ -216,17 +235,21 @@ export class ImapSmtpClient {
     return result
   }
 
-  private async getSmtpTransporter(): Promise<Transporter | UnsupportedError> {
-    if (this.smtpTransporter) return this.smtpTransporter
-    if (!this.smtpCreds) return new UnsupportedError({ feature: 'Sending email', accountType: 'IMAP-only', hint: 'Add SMTP with: zele login imap --email ... --smtp-host ...' })
+  private async getSmtpTransporter(): Promise<Transporter | UnsupportedError | AuthError> {
+    const creds = await this.loadCredentials()
+    if (creds instanceof Error) return creds
+    if (!creds.smtp) return new UnsupportedError({ feature: 'Sending email', accountType: 'IMAP-only', hint: 'Add SMTP with: zele login imap --email ... --smtp-host ...' })
+    if (this.smtpTransporter && this.smtpAccessToken === creds.oauth?.accessToken) return this.smtpTransporter
     const nodemailer = await import('nodemailer')
+    this.smtpAccessToken = creds.oauth?.accessToken
     this.smtpTransporter = nodemailer.default.createTransport({
-      host: this.smtpCreds.host,
-      port: this.smtpCreds.port,
-      secure: this.smtpCreds.tls,
-      auth: this.oauthAccessToken
-        ? { type: 'OAuth2', user: this.smtpCreds.user, accessToken: this.oauthAccessToken }
-        : { user: this.smtpCreds.user, pass: this.smtpCreds.password ?? '' },
+      host: creds.smtp.host,
+      port: creds.smtp.port,
+      secure: creds.smtp.tls,
+      requireTLS: !creds.smtp.tls,
+      auth: creds.oauth
+        ? { type: 'OAuth2', user: creds.smtp.user, accessToken: creds.oauth.accessToken, expires: creds.oauth.expiry }
+        : { user: creds.smtp.user, pass: creds.smtp.password },
     })
     return this.smtpTransporter
   }
@@ -562,7 +585,8 @@ export class ImapSmtpClient {
     // APPEND a copy to the Sent folder so `mail list --folder sent` shows it.
     // SMTP alone doesn't guarantee a copy in the mailbox.
     // Build the raw MIME using nodemailer's MailComposer so attachments, HTML, etc. are preserved.
-    if (this.imapCreds) {
+    const imapCreds = await this.loadCredentials()
+    if (!(imapCreds instanceof Error) && imapCreds.imap) {
       const nodemailer = await import('nodemailer')
       const MailComposer = (nodemailer as any).default?.MailComposer ?? (nodemailer as any).MailComposer
       const rawMime: Buffer | ApiError = MailComposer

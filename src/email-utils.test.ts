@@ -418,13 +418,13 @@ describe('resolveReplyRecipients', () => {
 
   test('IMAP preserves every Reply-To address and marks sent messages', () => {
     const imap = new ImapSmtpClient({
-      credentials: {},
       account: {
         email: ME,
         appId: 'imap_smtp',
         accountType: 'imap_smtp',
         capabilities: [],
       },
+      loadCredentials: async () => ({}),
     })
     const parsed = imap.parseImapMessage({
       message: {

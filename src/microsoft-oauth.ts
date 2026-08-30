@@ -3,11 +3,6 @@
 // Client ID is Thunderbird's public desktop app, same pattern as Google login.
 
 import { createHash, randomBytes } from 'node:crypto'
-import http from 'node:http'
-import readline from 'node:readline'
-import { spawn } from 'node:child_process'
-import fkill from 'fkill'
-import { colors as pc } from 'goke'
 import * as errore from 'errore'
 
 export const MICROSOFT_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
@@ -32,7 +27,7 @@ export interface MicrosoftOAuthTokens {
 
 export function createPkce(): { verifier: string; challenge: string } {
   const verifier = randomBytes(32).toString('base64url')
-  const challenge = createHash('sha256').update(verifier).digest('base64url').replace(/=+$/, '')
+  const challenge = createHash('sha256').update(verifier).digest('base64url')
   return { verifier, challenge }
 }
 
@@ -66,6 +61,20 @@ export function emailFromIdToken(idToken: string): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+export function resolveMicrosoftAccountEmail(opts: {
+  tokenEmail?: string
+  requestedEmail?: string
+}): string | Error {
+  const token = opts.tokenEmail?.trim()
+  const requested = opts.requestedEmail?.trim()
+  if (token && requested && token.toLowerCase() !== requested.toLowerCase()) {
+    return new Error(`Signed in as ${token}, but --email was ${requested}. Re-run and pick the right account.`)
+  }
+  const email = token ?? requested
+  if (!email) return new Error('Could not determine Microsoft account email from the token. Pass --email.')
+  return email
+}
+
 interface TokenResponse {
   access_token?: string
   refresh_token?: string
@@ -75,7 +84,7 @@ interface TokenResponse {
   error_description?: string
 }
 
-function tokensFromResponse(json: TokenResponse, fallbackRefreshToken?: string): MicrosoftOAuthTokens | Error {
+export function tokensFromResponse(json: TokenResponse, fallbackRefreshToken?: string): MicrosoftOAuthTokens | Error {
   if (json.error) {
     return new Error(json.error_description ?? json.error)
   }
@@ -136,98 +145,5 @@ export async function refreshMicrosoftToken(refreshToken: string): Promise<Micro
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     scope: MICROSOFT_SCOPES.join(' '),
-  })
-}
-
-function openUrlInBrowser(url: string): Error | void {
-  const command = process.platform === 'darwin'
-    ? { bin: 'open', args: [url] }
-    : process.platform === 'win32'
-      ? { bin: 'cmd', args: ['/c', 'start', '', url] }
-      : { bin: 'xdg-open', args: [url] }
-
-  const child = errore.tryFn(() =>
-    spawn(command.bin, command.args, { detached: true, stdio: 'ignore' }),
-  )
-  if (child instanceof Error) {
-    return new Error(`Failed to open browser with ${command.bin}`, { cause: child })
-  }
-  child.unref()
-}
-
-export async function getMicrosoftAuthCode(opts: {
-  authUrl: string
-  port: number
-  openBrowser?: boolean
-}): Promise<string | Error> {
-  const openBrowser = opts.openBrowser ?? true
-  await fkill(`:${opts.port}`, { force: true, silent: true }).catch(() => {})
-
-  console.error('\n' + pc.bold('1.') + ' Open this URL to authorize:\n')
-  console.error('   ' + pc.cyan(pc.underline(opts.authUrl)) + '\n')
-  console.error(pc.bold('2.') + ' If running locally, the browser will redirect automatically.')
-  console.error(pc.dim('   If running remotely, copy the URL from the address bar and paste it below.') + '\n')
-
-  if (openBrowser) {
-    const openResult = openUrlInBrowser(opts.authUrl)
-    if (openResult instanceof Error) {
-      console.error(pc.yellow(`Could not auto-open browser: ${openResult.message}`))
-    }
-  }
-
-  return new Promise((resolve) => {
-    let resolved = false
-    let server: http.Server | null = null
-    let rl: readline.Interface | null = null
-
-    function finish(value: string | Error) {
-      if (resolved) return
-      resolved = true
-      if (server) {
-        server.closeAllConnections()
-        server.close()
-      }
-      if (rl) {
-        rl.close()
-        process.stdin.unref()
-      }
-      resolve(value)
-    }
-
-    server = http.createServer((req, res) => {
-      const url = new URL(req.url!, `http://localhost:${opts.port}`)
-      const code = url.searchParams.get('code')
-      const error = url.searchParams.get('error')
-      if (error) {
-        res.writeHead(400, { 'Content-Type': 'text/plain' })
-        res.end(`Authorization failed: ${error}`)
-        finish(new Error(url.searchParams.get('error_description') ?? error))
-        return
-      }
-      if (code) {
-        res.writeHead(200, { 'Content-Type': 'text/plain' })
-        res.end('Login complete. You can close this tab.')
-        finish(code)
-        return
-      }
-      res.writeHead(400, { 'Content-Type': 'text/plain' })
-      res.end('No authorization code received')
-    })
-
-    server.listen(opts.port)
-    server.on('error', (err) => {
-      finish(new Error(`Failed to start local auth callback server on port ${opts.port}`, { cause: err }))
-    })
-
-    if (process.stdin.isTTY) {
-      rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-      rl.question(pc.dim('Paste redirect URL here (or wait for auto-redirect): '), (answer) => {
-        const trimmed = answer.trim()
-        const fromUrl = errore.tryFn(() => new URL(trimmed).searchParams.get('code'))
-        const code = fromUrl instanceof Error ? (trimmed.length > 10 ? trimmed : null) : fromUrl
-        if (code) finish(code)
-        else console.error(pc.yellow('Could not extract authorization code from input.'))
-      })
-    }
   })
 }

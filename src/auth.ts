@@ -5,27 +5,24 @@
 // and helpers to get authenticated GmailClient / ImapSmtpClient instances.
 // app_id is the OAuth client ID used during login (Google) or `imap_smtp`.
 
-import http from 'node:http'
-import readline from 'node:readline'
-import { spawn } from 'node:child_process'
 import { OAuth2Client, type Credentials } from 'google-auth-library'
-import fkill from 'fkill'
 import { colors as pc } from 'goke'
 import * as orm from 'drizzle-orm'
 import { getDb, schema } from './db.js'
 import { GmailClient } from './gmail-client.js'
 import { CalendarClient } from './calendar-client.js'
 import * as errore from 'errore'
-import { AuthError, ApiError, UnsupportedError } from './api-utils.js'
+import { AuthError, UnsupportedError } from './api-utils.js'
 import { ImapSmtpClient } from './imap-smtp-client.js'
+import { waitForOAuthCode, type BrowserAuthOptions } from './oauth-callback-server.js'
 import {
   MICROSOFT_REDIRECT_PORT,
   buildMicrosoftAuthUrl,
   createPkce,
   emailFromIdToken,
   exchangeMicrosoftCode,
-  getMicrosoftAuthCode,
   refreshMicrosoftToken,
+  resolveMicrosoftAccountEmail,
   type MicrosoftOAuthTokens,
 } from './microsoft-oauth.js'
 
@@ -186,365 +183,24 @@ export interface AccountId {
 // Browser OAuth flow
 // ---------------------------------------------------------------------------
 
-function extractCodeFromInput(input: string): string | null {
-  const trimmed = input.trim()
-  if (!trimmed) return null
-
-  const url = errore.tryFn(() => new URL(trimmed))
-  if (!(url instanceof Error)) {
-    const code = url.searchParams.get('code')
-    if (code) return code
-  }
-
-  if (trimmed.length > 10 && !trimmed.includes(' ')) {
-    return trimmed
-  }
-
-  return null
-}
-
-interface BrowserAuthOptions {
-  openBrowser?: boolean
-  allowManualCodeEntry?: boolean
-  showInstructions?: boolean
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-}
-
-function authCallbackHtml(options: {
-  title: string
-  message: string
-  status: 'success' | 'error' | 'neutral'
-  sectionTitle: string
-  commands: Array<{ comment: string; command: string }>
-}): string {
-  const statusLabel = options.status === 'success'
-    ? 'OK'
-    : options.status === 'error'
-      ? 'ERROR'
-      : 'INFO'
-
-  const commandsHtml = options.commands
-    .map((c) =>
-      `<span class="comment"># ${escapeHtml(c.comment)}</span>\n${escapeHtml(c.command)}`,
-    )
-    .join('\n\n')
-
-  return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="robots" content="noindex, nofollow" />
-    <title>${escapeHtml(options.title)}</title>
-    <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-      :root {
-        --bg: #fff;
-        --fg: #111;
-        --muted: #444;
-        --panel: #fafafa;
-        --chip: #f5f5f5;
-        --border: #eee;
-        --comment: #888;
-        --accent: #2563eb;
-      }
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-          'Helvetica Neue', Arial, sans-serif;
-        background: radial-gradient(1200px 600px at 50% -10%, rgba(37, 99, 235, 0.08), transparent 60%),
-          var(--bg);
-        color: var(--fg);
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1.25rem;
-        line-height: 1.6;
-      }
-      .container {
-        max-width: 560px;
-        width: 100%;
-        text-align: center;
-      }
-      .status {
-        display: inline-flex;
-        gap: 0.5rem;
-        align-items: center;
-        justify-content: center;
-        font-family: 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
-        font-size: 0.75rem;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--muted);
-        background: var(--chip);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 0.25rem 0.6rem;
-        margin: 0 auto 0.9rem;
-        width: fit-content;
-      }
-      .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: var(--accent);
-      }
-      h1 {
-        font-size: 1.6rem;
-        font-weight: 650;
-        margin-bottom: 0.75rem;
-        letter-spacing: -0.02em;
-      }
-      p {
-        color: var(--muted);
-        margin-bottom: 1.25rem;
-      }
-      .section {
-        margin-top: 1.75rem;
-        padding-top: 1.75rem;
-        border-top: 1px solid var(--border);
-      }
-      .section-title {
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #888;
-        margin-bottom: 1rem;
-      }
-      pre {
-        font-family: 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
-        font-size: 0.8125rem;
-        background: var(--panel);
-        margin-left: -1rem;
-        margin-right: -1rem;
-        padding: 0.85rem 1rem;
-        overflow-x: auto;
-        line-height: 1.75;
-        text-align: left;
-        border-radius: 12px;
-        border: 1px solid var(--border);
-      }
-      code {
-        font-family: inherit;
-      }
-      .comment {
-        color: var(--comment);
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #0f0f10;
-          --fg: #eee;
-          --muted: #aaa;
-          --panel: #171718;
-          --chip: #1b1b1c;
-          --border: #2a2a2b;
-          --comment: #666;
-          --accent: #60a5fa;
-        }
-        body {
-          background: radial-gradient(1200px 600px at 50% -10%, rgba(96, 165, 250, 0.16), transparent 60%),
-            var(--bg);
-        }
-        .section-title {
-          color: #777;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="status"><span class="dot"></span>${escapeHtml(statusLabel)}</div>
-      <h1>${escapeHtml(options.title)}</h1>
-      <p>${escapeHtml(options.message)}</p>
-      <div class="section">
-        <div class="section-title">${escapeHtml(options.sectionTitle)}</div>
-        <pre><code>${commandsHtml}</code></pre>
-      </div>
-    </div>
-  </body>
-</html>`
-}
-
-function openUrlInBrowser(url: string): Error | void {
-  const command = process.platform === 'darwin'
-    ? { bin: 'open', args: [url] }
-    : process.platform === 'win32'
-      ? { bin: 'cmd', args: ['/c', 'start', '', url] }
-      : { bin: 'xdg-open', args: [url] }
-
-  const child = errore.tryFn(() =>
-    spawn(command.bin, command.args, {
-      detached: true,
-      stdio: 'ignore',
-    }),
-  )
-  if (child instanceof Error) {
-    return new Error(`Failed to open browser with ${command.bin}`, { cause: child })
-  }
-
-  child.unref()
-}
-
 async function getAuthCodeFromBrowser(
   oauth2Client: OAuth2Client,
   port: number,
   options?: BrowserAuthOptions,
 ): Promise<string | Error> {
-  const openBrowser = options?.openBrowser ?? true
-  const allowManualCodeEntry = options?.allowManualCodeEntry ?? true
-  const showInstructions = options?.showInstructions ?? true
-
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
     prompt: 'consent',
   })
-
-  await errore.tryAsync({
-    try: () => fkill(`:${port}`, { force: true, silent: true }),
-    catch: (err) => new Error(String(err), { cause: err }),
-  })
-
-  if (showInstructions) {
-    console.error('\n' + pc.bold('1.') + ' Open this URL to authorize:\n')
-    console.error('   ' + pc.cyan(pc.underline(authUrl)) + '\n')
-    console.error(pc.bold('2.') + ' If running locally, the browser will redirect automatically.')
-    console.error(pc.dim('   If running remotely, the redirect page won\'t load — that\'s fine.'))
-    console.error(pc.dim('   Just copy the URL from your browser\'s address bar and paste it below.') + '\n')
-  }
-
-  if (openBrowser) {
-    const openResult = openUrlInBrowser(authUrl)
-    if (openResult instanceof Error && showInstructions) {
-      console.error(pc.yellow(`Could not auto-open browser: ${openResult.message}`))
-      console.error(pc.dim('Open the URL above manually.'))
-    }
-  }
-
-  return new Promise((resolve) => {
-    let resolved = false
-    let server: http.Server | null = null
-    let rl: readline.Interface | null = null
-
-    function closeServer() {
-      if (server) {
-        server.closeAllConnections()
-        server.close()
-      }
-    }
-
-    function finish(code: string) {
-      if (resolved) return
-      resolved = true
-      closeServer()
-      if (rl) {
-        rl.close()
-        process.stdin.unref()
-      }
-      resolve(code)
-    }
-
-    function fail(err: Error) {
-      if (resolved) return
-      resolved = true
-      closeServer()
-      rl?.close()
-      resolve(err)
-    }
-
-    server = http.createServer((req, res) => {
-      const url = new URL(req.url!, `http://localhost:${port}`)
-      const code = url.searchParams.get('code')
-      const error = url.searchParams.get('error')
-
-      if (error) {
-        res.writeHead(400, { 'Content-Type': 'text/html' })
-        res.end(
-          authCallbackHtml({
-            title: 'Authorization failed',
-            message: `Google returned: ${error}`,
-            status: 'error',
-            sectionTitle: 'Try again',
-            commands: [
-              { comment: 'Start login again', command: 'zele login' },
-              {
-                comment: 'If running remotely, copy the full redirect URL',
-                command: '# ...and paste it into the terminal prompt',
-              },
-            ],
-          }),
-        )
-        fail(new Error(error))
-        return
-      }
-
-      if (code) {
-        res.writeHead(200, { 'Content-Type': 'text/html' })
-        res.end(
-          authCallbackHtml({
-            title: 'Login complete',
-            message: 'You can close this tab and go back to the terminal.',
-            status: 'success',
-            sectionTitle: 'Next steps',
-            commands: [
-              { comment: 'Plan: open the TUI to read your emails', command: 'zele' },
-              { comment: 'Plan: list your latest threads', command: 'zele mail list' },
-              { comment: 'Plan: search with Gmail query syntax', command: 'zele mail search "from:github"' },
-            ],
-          }),
-        )
-        finish(code)
-        return
-      }
-
-      res.writeHead(400, { 'Content-Type': 'text/html' })
-      res.end(
-        authCallbackHtml({
-          title: 'No authorization code received',
-          message: 'This page was opened without the OAuth "code" parameter.',
-          status: 'neutral',
-          sectionTitle: 'What to do',
-          commands: [
-            { comment: 'Restart login and try again', command: 'zele login' },
-            {
-              comment: 'If the browser can’t reach localhost, that’s fine',
-              command: '# Copy the redirect URL from the address bar and paste it into the terminal',
-            },
-          ],
-        }),
-      )
-    })
-
-    server.listen(port)
-    server.on('error', (err) => {
-      fail(new Error(`Failed to start local auth callback server on port ${port}`, { cause: err }))
-    })
-
-    if (allowManualCodeEntry && process.stdin.isTTY) {
-      rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-      rl.question(pc.dim('Paste redirect URL here (or wait for auto-redirect): '), (answer) => {
-        const code = extractCodeFromInput(answer)
-        if (code) {
-          finish(code)
-        } else {
-          console.error(pc.yellow('Could not extract authorization code from input.'))
-          console.error(pc.dim('Waiting for browser redirect...'))
-        }
-      })
-    }
+  return waitForOAuthCode({
+    authUrl,
+    port,
+    loginCommand: 'zele login',
+    provider: 'Google',
+    openBrowser: options?.openBrowser,
+    allowManualCodeEntry: options?.allowManualCodeEntry,
+    showInstructions: options?.showInstructions,
   })
 }
 
@@ -774,10 +430,14 @@ export async function loginMicrosoft(
     loginHint: options?.email,
   })
 
-  const code = await getMicrosoftAuthCode({
+  const code = await waitForOAuthCode({
     authUrl,
     port: MICROSOFT_REDIRECT_PORT,
+    loginCommand: 'zele login microsoft',
+    provider: 'Microsoft',
     openBrowser: options?.openBrowser,
+    allowManualCodeEntry: options?.allowManualCodeEntry,
+    showInstructions: options?.showInstructions,
   })
   if (code instanceof Error) return code
 
@@ -788,8 +448,11 @@ export async function loginMicrosoft(
   const oauth = await exchangeMicrosoftCode({ code, verifier, redirectUri })
   if (oauth instanceof Error) return oauth
 
-  const email = options?.email ?? (oauth.idToken ? emailFromIdToken(oauth.idToken) : undefined)
-  if (!email) return new Error('Could not determine Microsoft account email from the token. Pass --email.')
+  const email = resolveMicrosoftAccountEmail({
+    tokenEmail: oauth.idToken ? emailFromIdToken(oauth.idToken) : undefined,
+    requestedEmail: options?.email,
+  })
+  if (email instanceof Error) return email
 
   const credentials: ImapSmtpCredentials = {
     imap: {
@@ -829,7 +492,8 @@ export async function loginMicrosoft(
     host: OUTLOOK_SMTP_HOST,
     port: 587,
     secure: false,
-    auth: { type: 'OAuth2', user: email, accessToken: oauth.accessToken },
+    requireTLS: true,
+    auth: { type: 'OAuth2', user: email, accessToken: oauth.accessToken, expires: oauth.expiry },
   })
   const smtpTest = await errore.tryAsync({
     try: () => transporter.verify(),
@@ -869,12 +533,32 @@ export async function loginMicrosoft(
   return { email, appId: IMAP_SMTP_APP_ID }
 }
 
-async function refreshImapOauth(credentials: ImapSmtpCredentials): Promise<ImapSmtpCredentials | Error> {
-  if (!credentials.oauth) return credentials
-  if (credentials.oauth.expiry > Date.now() + 60_000) return credentials
-  const refreshed = await refreshMicrosoftToken(credentials.oauth.refreshToken)
-  if (refreshed instanceof Error) return refreshed
-  return { ...credentials, oauth: refreshed }
+export async function loadImapCredentials(account: AccountId): Promise<ImapSmtpCredentials | AuthError> {
+  const db = getDb()
+  const row = db.query.account.findFirst({
+    where: { email: account.email, appId: account.appId },
+  }).sync()
+  if (!row) {
+    return new AuthError({ email: account.email, reason: 'No account found. Run: zele login' })
+  }
+  const stored: ImapSmtpCredentials = JSON.parse(row.tokens)
+  if (!stored.oauth || stored.oauth.expiry > Date.now() + 60_000) return stored
+  const refreshed = await refreshMicrosoftToken(stored.oauth.refreshToken)
+  if (refreshed instanceof Error) {
+    return new AuthError({ email: account.email, reason: `${refreshed.message}. Try: zele login microsoft` })
+  }
+  const next = { ...stored, oauth: refreshed }
+  const save = await errore.tryAsync({
+    try: async () => {
+      db.update(schema.account)
+        .set({ tokens: JSON.stringify(next), updatedAt: new Date() })
+        .where(orm.and(orm.eq(schema.account.email, account.email), orm.eq(schema.account.appId, account.appId)))
+        .run()
+    },
+    catch: (err) => new AuthError({ email: account.email, reason: `Failed to save refreshed token: ${String(err)}` }),
+  })
+  if (save instanceof Error) return save
+  return next
 }
 
 // ---------------------------------------------------------------------------
@@ -977,29 +661,18 @@ export async function getClients(
     throw new Error(`No matching accounts. Available: ${available}`)
   }
 
-  const db = getDb()
   const results = await Promise.all(
     filtered.map(async (account): Promise<ClientEntry> => {
       if (account.accountType === 'imap_smtp') {
-        const row = db.query.account.findFirst({
-          where: { email: account.email, appId: account.appId },
-        }).sync()
-        if (!row) throw new Error(`No account found for ${account.email}. Run: zele login`)
-        const stored: ImapSmtpCredentials = JSON.parse(row.tokens)
-        const credentials = await refreshImapOauth(stored)
-        if (credentials instanceof Error) throw credentials
-        if (credentials.oauth && credentials.oauth !== stored.oauth) {
-          db.update(schema.account)
-            .set({ tokens: JSON.stringify(credentials), updatedAt: new Date() })
-            .where(orm.and(orm.eq(schema.account.email, account.email), orm.eq(schema.account.appId, account.appId)))
-            .run()
-        }
         return {
           email: account.email,
           appId: account.appId,
           accountType: 'imap_smtp',
           capabilities: account.capabilities,
-          client: new ImapSmtpClient({ credentials, account }),
+          client: new ImapSmtpClient({
+            account,
+            loadCredentials: () => loadImapCredentials(account),
+          }),
         }
       }
 
@@ -1147,12 +820,13 @@ export async function getAuthStatuses(): Promise<AuthStatus[]> {
         expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
       }
     }
-    // IMAP/SMTP — no expiry
+    const creds: ImapSmtpCredentials = JSON.parse(row.tokens)
     return {
       email: row.email,
       appId: row.appId,
       accountType,
       capabilities,
+      expiresAt: creds.oauth ? new Date(creds.oauth.expiry) : undefined,
     }
   })
 }

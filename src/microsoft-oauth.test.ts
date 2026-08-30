@@ -9,6 +9,8 @@ import {
   buildMicrosoftAuthUrl,
   createPkce,
   emailFromIdToken,
+  resolveMicrosoftAccountEmail,
+  tokensFromResponse,
 } from './microsoft-oauth.js'
 
 function b64url(json: object) {
@@ -19,7 +21,7 @@ describe('createPkce', () => {
   test('verifier is S256 of challenge', () => {
     const { verifier, challenge } = createPkce()
     expect(verifier.length).toBeGreaterThanOrEqual(43)
-    const expected = createHash('sha256').update(verifier).digest('base64url').replace(/=+$/, '')
+    const expected = createHash('sha256').update(verifier).digest('base64url')
     expect(challenge).toBe(expected)
   })
 })
@@ -55,5 +57,66 @@ describe('emailFromIdToken', () => {
   test('falls back to email then upn', () => {
     expect(emailFromIdToken(`e30.${b64url({ email: 'a@b.com' })}.sig`)).toBe('a@b.com')
     expect(emailFromIdToken(`e30.${b64url({ upn: 'c@d.com' })}.sig`)).toBe('c@d.com')
+  })
+})
+
+describe('resolveMicrosoftAccountEmail', () => {
+  test('prefers id_token over --email', () => {
+    expect(resolveMicrosoftAccountEmail({
+      tokenEmail: 'atrox@outlook.it',
+      requestedEmail: 'atrox@outlook.it',
+    })).toBe('atrox@outlook.it')
+  })
+
+  test('rejects a picker mismatch', () => {
+    const result = resolveMicrosoftAccountEmail({
+      tokenEmail: 'b@outlook.com',
+      requestedEmail: 'a@outlook.it',
+    })
+    expect(result).toBeInstanceOf(Error)
+    expect(String(result)).toContain('b@outlook.com')
+    expect(String(result)).toContain('a@outlook.it')
+  })
+
+  test('falls back to --email when id_token has no email', () => {
+    expect(resolveMicrosoftAccountEmail({ requestedEmail: 'atrox@outlook.it' })).toBe('atrox@outlook.it')
+  })
+})
+
+describe('tokensFromResponse', () => {
+  test('reads error_description', () => {
+    const result = tokensFromResponse({ error: 'invalid_grant', error_description: 'AADSTS70008: expired' })
+    expect(result).toBeInstanceOf(Error)
+    expect(String(result)).toContain('AADSTS70008')
+  })
+
+  test('requires access_token', () => {
+    const result = tokensFromResponse({ refresh_token: 'r' })
+    expect(result).toBeInstanceOf(Error)
+    expect(String(result)).toContain('access token')
+  })
+
+  test('uses fallback refresh token when Microsoft omits it', () => {
+    const result = tokensFromResponse({ access_token: 'a', expires_in: 3600 }, 'old-refresh')
+    expect(result).not.toBeInstanceOf(Error)
+    if (result instanceof Error) return
+    expect(result.accessToken).toBe('a')
+    expect(result.refreshToken).toBe('old-refresh')
+  })
+
+  test('happy path', () => {
+    const result = tokensFromResponse({
+      access_token: 'a',
+      refresh_token: 'r',
+      expires_in: 10,
+      id_token: 'id',
+    })
+    expect(result).not.toBeInstanceOf(Error)
+    if (result instanceof Error) return
+    expect(result.accessToken).toBe('a')
+    expect(result.refreshToken).toBe('r')
+    expect(result.idToken).toBe('id')
+    expect(result.clientId).toBe(MICROSOFT_CLIENT_ID)
+    expect(result.expiry).toBeGreaterThan(Date.now())
   })
 })
