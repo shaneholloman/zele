@@ -4,21 +4,65 @@
 
 import type { ZeleCli } from '../cli-types.js'
 import { z } from 'zod'
-import { colors as pc, isAgent } from 'goke'
+import { isAgent, type GokeExecutionContext } from 'goke'
 import * as clack from '@clack/prompts'
 import { login, loginImap, loginMicrosoft, logout, listAccounts, getAuthStatuses } from '../auth.js'
 import { closeDb } from '../db.js'
 import * as out from '../output.js'
 import { handleCommandError } from '../output.js'
+import type { BrowserAuthOptions } from '../oauth-callback-server.js'
+
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
+
+async function runBrowserOAuth(
+  ctx: GokeExecutionContext,
+  run: (options?: BrowserAuthOptions) => Promise<{ email: string } | Error>,
+) {
+  const execute = async (options?: BrowserAuthOptions) => {
+    const result = await run(options)
+    if (result instanceof Error) handleCommandError(result)
+    out.success(`Authenticated as ${result.email}`)
+    await closeDb()
+  }
+
+  if (ctx.daemon.isDaemon) {
+    await execute({
+      openBrowser: false,
+      allowManualCodeEntry: false,
+      showInstructions: false,
+      onAuthorizationUrl: (url) => {
+        ctx.daemon.publishStartupMessage(`Open this URL to authorize:\n${url}\n`, { stream: 'stderr' })
+        ctx.daemon.ready()
+      },
+    })
+    return
+  }
+
+  if (isAgent || !process.stdout.isTTY) {
+    await ctx.daemon.start({
+      timeoutMs: LOGIN_TIMEOUT_MS,
+      waitForStartup: true,
+      startupTimeoutMs: 30_000,
+    })
+    out.hint('Login running in background.')
+    out.hint('After approving in the browser, verify with: zele whoami')
+    return
+  }
+
+  await execute()
+}
 
 export function registerAuthCommands(cli: ZeleCli) {
   cli
     .command('login', 'Authenticate with Google, Outlook, or IMAP/SMTP')
     .option(
-      '--method <method>',
-      z.enum(['google', 'imap', 'microsoft']).optional().describe('Authentication method (google, imap, or microsoft)'),
+      '--method [method]',
+      z.enum(['google', 'imap', 'microsoft']).optional().describe('Authentication method'),
     )
-    .action(async (options) => {
+    .example('zele login --method google')
+    .example('zele login --method microsoft')
+    .example('zele login imap')
+    .action(async (options, ctx) => {
       let method = options.method
 
       if (!method) {
@@ -51,45 +95,16 @@ export function registerAuthCommands(cli: ZeleCli) {
       }
 
       if (method === 'microsoft') {
-        if (!process.stdout.isTTY) {
-          out.error(
-            'zele login --method microsoft needs an interactive terminal and must stay alive while you approve the browser login.\n\n' +
-            'Run it in a background terminal session like tuistory or tmux, then wait for the URL/code:\n\n' +
-            '  bunx tuistory launch "zele login --method microsoft" -s zele-login\n' +
-            '  bunx tuistory -s zele-login wait "/code:|https?:\\\\/\\\\//i" --timeout 15000',
-          )
-          process.exit(1)
-        }
-        const msResult = await loginMicrosoft()
-        if (msResult instanceof Error) handleCommandError(msResult)
-        out.success(`Authenticated as ${msResult.email}`)
-        await closeDb()
-        process.exit(0)
+        await runBrowserOAuth(ctx, (authOptions) => loginMicrosoft(authOptions))
+        return
       }
 
-      // Google OAuth flow — needs an interactive terminal and must stay alive
-      // while the user approves the browser login.
-      if (!process.stdout.isTTY) {
-        out.error(
-          'zele login needs an interactive terminal and must stay alive while you approve the browser login.\n\n' +
-          'Run it in a background terminal session like tuistory or tmux, then wait for the URL/code:\n\n' +
-          '  bunx tuistory launch "zele login --method google" -s zele-login\n' +
-          '  bunx tuistory -s zele-login wait "/code:|https?:\\\\/\\\\//i" --timeout 15000\n\n' +
-          'The login command exits by itself after successful browser approval.',
-        )
-        process.exit(1)
-      }
-
-      const result = await login()
-      if (result instanceof Error) handleCommandError(result)
-      const { email } = result
-      out.success(`Authenticated as ${email}`)
-      await closeDb()
-      process.exit(0)
+      await runBrowserOAuth(ctx, (authOptions) => login(undefined, authOptions))
     })
 
   cli
     .command('login imap', 'Add an IMAP/SMTP email account')
+    .example('zele login imap --email you@fastmail.com --imap-host imap.fastmail.com --password "pwd"')
     .option('--email [email]', z.string().optional().describe('Email address'))
     .option('--imap-host [imapHost]', z.string().optional().describe('IMAP server hostname'))
     .option('--imap-port [imapPort]', z.string().optional().describe('IMAP server port (default: 993)'))
@@ -245,21 +260,10 @@ export function registerAuthCommands(cli: ZeleCli) {
   cli
     .command('login microsoft', 'Add an Outlook / Hotmail / Microsoft 365 account via OAuth')
     .option('--email [email]', z.string().optional().describe('Email address (login hint)'))
-    .action(async (options) => {
-      if (!process.stdout.isTTY) {
-        out.error(
-          'zele login microsoft needs an interactive terminal and must stay alive while you approve the browser login.\n\n' +
-          'Run it in a background terminal session like tuistory or tmux, then wait for the URL/code:\n\n' +
-          '  bunx tuistory launch "zele login microsoft" -s zele-login\n' +
-          '  bunx tuistory -s zele-login wait "/code:|https?:\\\\/\\\\//i" --timeout 15000',
-        )
-        process.exit(1)
-      }
-      const result = await loginMicrosoft({ email: options.email })
-      if (result instanceof Error) handleCommandError(result)
-      out.success(`Authenticated as ${result.email}`)
-      await closeDb()
-      process.exit(0)
+    .example('zele login microsoft')
+    .example('zele login microsoft --email you@outlook.com')
+    .action(async (options, ctx) => {
+      await runBrowserOAuth(ctx, (authOptions) => loginMicrosoft({ ...authOptions, email: options.email }))
     })
 
   cli
@@ -343,7 +347,7 @@ export function registerAuthCommands(cli: ZeleCli) {
           type: s.accountType,
           capabilities: s.capabilities.join(', '),
           status: 'Authenticated',
-          ...(s.expiresAt ? { expires: s.expiresAt.toISOString() } : {}),
+          expires: s.expiresAt?.toISOString(),
         })),
         { summary: `${statuses.length} account(s)` },
       )

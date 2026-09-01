@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.0
+
+1. **Microsoft OAuth for Outlook, Hotmail, and Microsoft 365** — connect Microsoft accounts without an app password:
+
+   ```bash
+   zele login microsoft
+   zele login microsoft --email you@outlook.com
+   zele login --method microsoft
+   ```
+
+   Outlook.com requires XOAUTH2 for IMAP and SMTP. Zele opens the Microsoft consent page, stores the resulting tokens, and refreshes access tokens before each connection so long-running commands such as `mail watch` continue after the one-hour token expires.
+
+   In agent and non-TTY environments, browser login starts as a background daemon and returns immediately. Approve the printed URL, then poll for the authenticated account:
+
+   ```bash
+   zele login --method microsoft
+   zele whoami
+   ```
+
+   Outlook accounts appear as `imap_smtp` in `zele whoami`. Mail commands work through IMAP and SMTP; Google-only labels, filters, and calendar commands remain unavailable.
+
 ## 0.6.0
 
 1. **Safer `mail reply` recipients** — replies used to go to the sender of the last message. When that last message was yours, the reply landed in your own inbox. Drafts made it worse: a trailing draft became the anchor, so the reply targeted you and lost its `In-Reply-To` header.

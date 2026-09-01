@@ -35,24 +35,16 @@ Opens a browser for Google OAuth2. Repeat to add more accounts.
 
 #### Remote / headless login (for agents)
 
-`zele login` is interactive — it prints an authorization URL and waits for the redirect URL to be pasted back. In agent or headless environments, run it inside a `tmux` session so the process persists and can be driven programmatically:
+In an agent or non-TTY shell, `zele login --method google` and `zele login microsoft` start a background daemon and return immediately. Open the printed URL, approve access, then poll:
 
 ```bash
-# start login in a tmux session
-tmux new-session -d -s zele-login 'zele login'
-
-# read the authorization URL from tmux output
-tmux capture-pane -t zele-login -p
-
-# after the user completes consent in their browser, paste the redirect URL
-tmux send-keys -t zele-login 'http://localhost:...?code=...' Enter
-
-# verify login succeeded
-tmux capture-pane -t zele-login -p
-tmux kill-session -t zele-login
+zele login --method google
+zele whoami
 ```
 
-IMAP/SMTP password login is non-interactive and requires no tmux wrapper. Microsoft OAuth login is interactive, same as Google.
+On a TTY, login stays in the foreground. If the browser cannot reach localhost, paste the redirect URL into the prompt.
+
+IMAP/SMTP password login is non-interactive.
 
 ### Outlook / Hotmail / Microsoft 365
 
@@ -333,6 +325,28 @@ zele mail list --filter "is:unread" --limit 100 | yq '.[].id' | xargs zele mail 
 
 # bulk archive unread
 zele mail list --filter "is:unread" --limit 100 | yq '.[].id' | xargs zele mail archive
+```
+
+## Shell Completions
+
+Enable Tab completion for your shell:
+
+```bash
+zele completions install
+```
+
+Restart your shell (or run `autoload -Uz compinit && compinit` for zsh). Then Tab works:
+
+```bash
+zele <TAB>          # shows all commands
+zele mail <TAB>     # completes mail subcommands
+zele login --<TAB>  # shows available options
+```
+
+Completions stay up-to-date automatically. To remove:
+
+```bash
+zele completions uninstall
 ```
 
 ## License

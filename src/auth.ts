@@ -201,6 +201,7 @@ async function getAuthCodeFromBrowser(
     openBrowser: options?.openBrowser,
     allowManualCodeEntry: options?.allowManualCodeEntry,
     showInstructions: options?.showInstructions,
+    onAuthorizationUrl: options?.onAuthorizationUrl,
   })
 }
 
@@ -438,6 +439,7 @@ export async function loginMicrosoft(
     openBrowser: options?.openBrowser,
     allowManualCodeEntry: options?.allowManualCodeEntry,
     showInstructions: options?.showInstructions,
+    onAuthorizationUrl: options?.onAuthorizationUrl,
   })
   if (code instanceof Error) return code
 

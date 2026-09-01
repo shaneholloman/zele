@@ -11,6 +11,7 @@ export interface BrowserAuthOptions {
   openBrowser?: boolean
   allowManualCodeEntry?: boolean
   showInstructions?: boolean
+  onAuthorizationUrl?: (url: string) => void
 }
 
 export function extractCodeFromInput(input: string): string | null {
@@ -207,12 +208,14 @@ export async function waitForOAuthCode(opts: {
   openBrowser?: boolean
   allowManualCodeEntry?: boolean
   showInstructions?: boolean
+  onAuthorizationUrl?: (url: string) => void
 }): Promise<string | Error> {
   const openBrowser = opts.openBrowser ?? true
   const allowManualCodeEntry = opts.allowManualCodeEntry ?? true
   const showInstructions = opts.showInstructions ?? true
 
   await fkill(`:${opts.port}`, { force: true, silent: true }).catch(() => {})
+  opts.onAuthorizationUrl?.(opts.authUrl)
 
   if (showInstructions) {
     console.error('\n' + pc.bold('1.') + ' Open this URL to authorize:\n')
