@@ -11,7 +11,7 @@ import type { Transporter } from 'nodemailer'
 import { createMimeMessage } from 'mimetext'
 import * as errore from 'errore'
 import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, SelfRecipientError, AmbiguousRecipientError, UnseenLatestError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
-import { resolveReplyRecipients, replySubject, threadAnchor, checkThreadLatestSeen, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
+import { buildOutgoingMime, resolveReplyRecipients, replySubject, threadAnchor, checkThreadLatestSeen, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import { renderEmailBody } from './output.js'
 import type { AccountId, ImapSmtpCredentials } from './auth.js'
 import type {
@@ -550,80 +550,50 @@ export class ImapSmtpClient {
     const transporter = await this.getSmtpTransporter()
     if (transporter instanceof Error) return transporter
     const fromEmail = this.account.email
+    const toHeader = to.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', ')
+    const ccHeader = cc && cc.length > 0
+      ? cc.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', ')
+      : undefined
+    const bccHeader = bcc && bcc.length > 0
+      ? bcc.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', ')
+      : undefined
 
-    const mailOptions: any = {
+    // One MIME buffer for SMTP DATA and IMAP Sent APPEND. Do not rebuild a
+    // text/plain fallback: that path dropped --attach files.
+    const rawMime = await buildOutgoingMime({
       from: fromEmail,
-      to: to.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', '),
+      to: toHeader,
       subject,
       text: body,
-    }
+      cc: ccHeader,
+      bcc: bccHeader,
+      inReplyTo,
+      references,
+      attachments,
+    })
+    if (rawMime instanceof Error) return rawMime
 
-    if (cc && cc.length > 0) {
-      mailOptions.cc = cc.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', ')
-    }
-    if (bcc && bcc.length > 0) {
-      mailOptions.bcc = bcc.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', ')
-    }
-    if (inReplyTo) {
-      mailOptions.inReplyTo = inReplyTo
-    }
-    if (references) {
-      mailOptions.references = references
-    }
-    if (attachments && attachments.length > 0) {
-      mailOptions.attachments = attachments.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.mimeType,
-      }))
-    }
+    const sendResult = await transporter.sendMail({
+      envelope: {
+        from: fromEmail,
+        to: [
+          ...to.map((r) => r.email),
+          ...(cc ?? []).map((r) => r.email),
+          ...(bcc ?? []).map((r) => r.email),
+        ],
+      },
+      raw: rawMime,
+    }).catch((e) => new ApiError({ reason: `SMTP send failed: ${String(e)}`, cause: e }))
+    if (sendResult instanceof Error) return sendResult
 
-    const sendResult = await transporter.sendMail(mailOptions)
-      .catch((e: unknown) => new ApiError({ reason: `SMTP send failed: ${String(e)}`, cause: e as Error }))
-    if (sendResult instanceof Error) return sendResult as ApiError
-
-    // APPEND a copy to the Sent folder so `mail list --folder sent` shows it.
-    // SMTP alone doesn't guarantee a copy in the mailbox.
-    // Build the raw MIME using nodemailer's MailComposer so attachments, HTML, etc. are preserved.
     const imapCreds = await this.loadCredentials()
     if (!(imapCreds instanceof Error) && imapCreds.imap) {
-      const nodemailer = await import('nodemailer')
-      const MailComposer = (nodemailer as any).default?.MailComposer ?? (nodemailer as any).MailComposer
-      const rawMime: Buffer | ApiError = MailComposer
-        ? await new Promise<Buffer>((resolve, reject) => {
-            const mail = new MailComposer({ ...mailOptions, messageId: sendResult.messageId })
-            mail.compile().build((err: Error | null, message: Buffer) => {
-              if (err) reject(err)
-              else resolve(message)
-            })
-          }).catch((e: unknown) => new ApiError({ reason: `Failed to compile MIME for Sent copy: ${String(e)}`, cause: e as Error }))
-        : (() => {
-            // Fallback: build plain-text RFC 822 if MailComposer unavailable
-            const rawHeaders = [
-              `From: ${fromEmail}`,
-              `To: ${mailOptions.to}`,
-              `Subject: ${subject}`,
-              `Date: ${new Date().toUTCString()}`,
-              `MIME-Version: 1.0`,
-              `Content-Type: text/plain; charset=utf-8`,
-              ...(mailOptions.cc ? [`Cc: ${mailOptions.cc}`] : []),
-              ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
-              ...(references ? [`References: ${references}`] : []),
-              ...(sendResult.messageId ? [`Message-ID: ${sendResult.messageId}`] : []),
-            ]
-            return Buffer.from(rawHeaders.join('\r\n') + '\r\n\r\n' + body)
-          })()
-
-      if (rawMime instanceof Error) {
-        console.warn('Failed to build MIME for Sent copy:', rawMime.message)
-      } else {
-        const appendResult = await this.withImap(async (client) => {
-          const sentPath = await this.resolveMailboxPath(client, 'sent')
-          await client.append(sentPath, rawMime, ['\\Seen'])
-        })
-        if (appendResult instanceof Error) {
-          console.warn('Sent message but failed to save to Sent folder:', appendResult.message)
-        }
+      const appendResult = await this.withImap(async (client) => {
+        const sentPath = await this.resolveMailboxPath(client, 'sent')
+        await client.append(sentPath, rawMime, ['\\Seen'])
+      })
+      if (appendResult instanceof Error) {
+        console.warn('Sent message but failed to save to Sent folder:', appendResult.message)
       }
     }
 

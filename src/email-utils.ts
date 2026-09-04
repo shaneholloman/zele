@@ -5,10 +5,84 @@
 // Also hosts resolveReplyRecipients() and checkThreadLatestSeen(). Both are
 // pure — no API calls, no account state — so GmailClient and ImapSmtpClient
 // share them and tests need no network.
+//
+// buildOutgoingMime() is the SMTP/IMAP MIME builder. Import MailComposer from
+// nodemailer/lib/mail-composer — it is not a public nodemailer export.
+// Falling back to a hand-built text/plain RFC 822 drops attachments.
 
-import { AmbiguousRecipientError, SelfRecipientError, UnseenLatestError } from './api-utils.js'
+import MailComposer from 'nodemailer/lib/mail-composer/index.js'
+import * as errore from 'errore'
+import { AmbiguousRecipientError, ApiError, SelfRecipientError, UnseenLatestError } from './api-utils.js'
 import emailAddresses from 'email-addresses'
 const { parseFrom: _parseFrom, parseAddressList: _parseAddressList } = emailAddresses
+
+export type OutgoingAttachment = {
+  filename: string
+  mimeType: string
+  content: Buffer
+}
+
+/** Compile one RFC 822 buffer for SMTP DATA and IMAP Sent APPEND. */
+export async function buildOutgoingMime({
+  from,
+  to,
+  subject,
+  text,
+  cc,
+  bcc,
+  inReplyTo,
+  references,
+  attachments,
+  messageId,
+}: {
+  from: string
+  to: string
+  subject: string
+  text: string
+  cc?: string
+  bcc?: string
+  inReplyTo?: string
+  references?: string
+  attachments?: OutgoingAttachment[]
+  messageId?: string
+}): Promise<Buffer | ApiError> {
+  const mail: ConstructorParameters<typeof MailComposer>[0] = {
+    from,
+    to,
+    subject,
+    text,
+  }
+  if (cc) mail.cc = cc
+  if (bcc) mail.bcc = bcc
+  if (inReplyTo) mail.inReplyTo = inReplyTo
+  if (references) mail.references = references
+  if (messageId) mail.messageId = messageId
+  if (attachments && attachments.length > 0) {
+    mail.attachments = attachments.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.mimeType,
+    }))
+  }
+
+  const built = await errore.tryAsync({
+    try: () => new MailComposer(mail).compile().build(),
+    catch: (err) => new ApiError({ reason: `Failed to compile MIME: ${String(err)}`, cause: err }),
+  })
+  if (built instanceof Error) return built
+
+  if (attachments && attachments.length > 0) {
+    const raw = built.toString('utf8')
+    const missing = attachments.filter((a) => !raw.includes(a.filename))
+    if (!/multipart\/mixed/i.test(raw) || missing.length > 0) {
+      return new ApiError({
+        reason: `Compiled MIME is missing attachments (${missing.map((a) => a.filename).join(', ') || 'multipart/mixed'})`,
+      })
+    }
+  }
+
+  return built
+}
 
 export interface Sender {
   name?: string

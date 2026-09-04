@@ -210,6 +210,81 @@ function encodeBase64Url(data: string | Buffer) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+export function buildGmailMimeMessage({
+  to,
+  subject,
+  body,
+  cc,
+  bcc,
+  inReplyTo,
+  references,
+  attachments,
+  fromEmail,
+}: {
+  to: Array<{ name?: string; email: string }>
+  subject: string
+  body: string
+  cc?: Array<{ name?: string; email: string }>
+  bcc?: Array<{ name?: string; email: string }>
+  inReplyTo?: string
+  references?: string
+  attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
+  fromEmail?: string
+}) {
+  const msg = createMimeMessage()
+
+  // Gmail API replaces the From header with the authenticated user's email on send.
+  // For drafts, if no fromEmail is provided, Gmail uses the default sending address.
+  // 'me' is a valid Gmail API alias that gets resolved server-side.
+  msg.setSender(fromEmail || 'me')
+  msg.setRecipients(to.map((r) => ({ name: r.name ?? '', addr: r.email })))
+
+  if (cc && cc.length > 0) {
+    msg.setCc(cc.map((r) => ({ name: r.name ?? '', addr: r.email })))
+  }
+
+  if (bcc && bcc.length > 0) {
+    msg.setBcc(bcc.map((r) => ({ name: r.name ?? '', addr: r.email })))
+  }
+
+  msg.setSubject(subject)
+
+  const isHtml = /<[a-z][\s\S]*>/i.test(body)
+  msg.addMessage({
+    contentType: isHtml ? 'text/html' : 'text/plain',
+    data: body,
+  })
+
+  if (inReplyTo) {
+    msg.setHeader('In-Reply-To', sanitizeHeaderValue(inReplyTo))
+  }
+
+  if (references) {
+    const refs = references
+      .split(' ')
+      .filter(Boolean)
+      .map((ref) => {
+        ref = sanitizeHeaderValue(ref)
+        if (!ref.startsWith('<')) ref = `<${ref}`
+        if (!ref.endsWith('>')) ref = `${ref}>`
+        return ref
+      })
+    msg.setHeader('References', refs.join(' '))
+  }
+
+  if (attachments) {
+    for (const att of attachments) {
+      msg.addAttachment({
+        filename: att.filename,
+        contentType: att.mimeType,
+        data: att.content.toString('base64'),
+      })
+    }
+  }
+
+  return encodeBase64Url(msg.asRaw())
+}
+
 // ---------------------------------------------------------------------------
 // GmailClient
 // ---------------------------------------------------------------------------
@@ -609,7 +684,7 @@ export class GmailClient {
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
     fromEmail?: string
   }) {
-    const raw = this.buildMimeMessage({
+    const raw = buildGmailMimeMessage({
       to,
       subject,
       body,
@@ -852,7 +927,7 @@ export class GmailClient {
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
   }) {
-    const raw = this.buildMimeMessage({ to, subject, body, cc, bcc, attachments, fromEmail })
+    const raw = buildGmailMimeMessage({ to, subject, body, cc, bcc, attachments, fromEmail })
 
     const res = await withRetry(() =>
       this.gmail.users.drafts.create({
@@ -991,7 +1066,7 @@ export class GmailClient {
     fromEmail?: string
     attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
   }) {
-    const raw = this.buildMimeMessage({ to, subject, body, cc, bcc, attachments, fromEmail })
+    const raw = buildGmailMimeMessage({ to, subject, body, cc, bcc, attachments, fromEmail })
 
     const res = await gmailBoundary(this.account?.email ?? 'unknown', () =>
       withRetry(() =>
@@ -1040,7 +1115,7 @@ export class GmailClient {
     const envelope = await this.resolveThreadReply({ threadId, to, cc, replyAll, allowSelf, seenMessageId })
     if (envelope instanceof Error) return envelope
 
-    const raw = this.buildMimeMessage({
+    const raw = buildGmailMimeMessage({
       to: envelope.to,
       subject: replySubject(envelope.anchorSubject),
       body,
@@ -1112,7 +1187,7 @@ export class GmailClient {
       renderedBody,
     ].join('\n')
 
-    const raw = this.buildMimeMessage({
+    const raw = buildGmailMimeMessage({
       to,
       subject: `Fwd: ${lastMsg.subject}`,
       body: fullBody,
@@ -2076,86 +2151,6 @@ export class GmailClient {
         threadId: msg.threadId,
       }
     }
-  }
-
-  // =========================================================================
-  // Private: MIME message construction
-  // =========================================================================
-
-  private buildMimeMessage({
-    to,
-    subject,
-    body,
-    cc,
-    bcc,
-    inReplyTo,
-    references,
-    attachments,
-    fromEmail,
-  }: {
-    to: Array<{ name?: string; email: string }>
-    subject: string
-    body: string
-    cc?: Array<{ name?: string; email: string }>
-    bcc?: Array<{ name?: string; email: string }>
-    inReplyTo?: string
-    references?: string
-    attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>
-    fromEmail?: string
-  }) {
-    const msg = createMimeMessage()
-
-    // Gmail API replaces the From header with the authenticated user's email on send.
-    // For drafts, if no fromEmail is provided, Gmail uses the default sending address.
-    // 'me' is a valid Gmail API alias that gets resolved server-side.
-    msg.setSender(fromEmail || 'me')
-    msg.setRecipients(to.map((r) => ({ name: r.name ?? '', addr: r.email })))
-
-    if (cc && cc.length > 0) {
-      msg.setCc(cc.map((r) => ({ name: r.name ?? '', addr: r.email })))
-    }
-
-    if (bcc && bcc.length > 0) {
-      msg.setBcc(bcc.map((r) => ({ name: r.name ?? '', addr: r.email })))
-    }
-
-    msg.setSubject(subject)
-
-    // Detect if body is HTML
-    const isHtml = /<[a-z][\s\S]*>/i.test(body)
-    msg.addMessage({
-      contentType: isHtml ? 'text/html' : 'text/plain',
-      data: body,
-    })
-
-    if (inReplyTo) {
-      msg.setHeader('In-Reply-To', sanitizeHeaderValue(inReplyTo))
-    }
-
-    if (references) {
-      const refs = references
-        .split(' ')
-        .filter(Boolean)
-        .map((ref) => {
-          ref = sanitizeHeaderValue(ref)
-          if (!ref.startsWith('<')) ref = `<${ref}`
-          if (!ref.endsWith('>')) ref = `${ref}>`
-          return ref
-        })
-      msg.setHeader('References', refs.join(' '))
-    }
-
-    if (attachments) {
-      for (const att of attachments) {
-        msg.addAttachment({
-          filename: att.filename,
-          contentType: att.mimeType,
-          data: att.content.toString('base64'),
-        })
-      }
-    }
-
-    return encodeBase64Url(msg.asRaw())
   }
 
   // =========================================================================

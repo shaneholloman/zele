@@ -2,8 +2,8 @@
 // Captures entity/encoding regressions in snippet fields from Gmail metadata responses.
 
 import { expect, test, describe } from 'vitest'
-import { OAuth2Client } from 'google-auth-library'
-import { GmailClient, parseAuthResults } from './gmail-client.js'
+import { OAuth2Client } from 'googleapis-common'
+import { buildGmailMimeMessage, GmailClient, parseAuthResults } from './gmail-client.js'
 
 // Create a real client instance for testing (no account context needed for parsing tests)
 const auth = new OAuth2Client()
@@ -213,5 +213,46 @@ describe('parseAuthResults', () => {
     }
     const parsed = client.parseMessage(rawMessage as any)
     expect(parsed.auth).toBeNull()
+  })
+})
+
+function decodeGmailRaw(raw: string) {
+  const padded = raw.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((raw.length + 3) % 4)
+  return Buffer.from(padded, 'base64').toString('utf8')
+}
+
+describe('buildGmailMimeMessage', () => {
+  const pdf = Buffer.from('%PDF-1.4 gmail-invoice')
+
+  test('PDF attachment survives Gmail base64url MIME', () => {
+    const encoded = buildGmailMimeMessage({
+      to: [{ email: 'recipient@example.test' }],
+      subject: 'Invoice',
+      body: 'Hello Shawn',
+      attachments: [{ filename: 'invoice.pdf', mimeType: 'application/pdf', content: pdf }],
+      fromEmail: 'me@example.com',
+    })
+    const mime = decodeGmailRaw(encoded)
+    expect(mime).toContain('multipart/mixed')
+    expect(mime).toContain('application/pdf')
+    expect(mime).toContain('invoice.pdf')
+    expect(mime).toMatch(/Content-Disposition:\s*attachment/)
+    const part = mime.split(/\n--/).find((p) => p.includes('invoice.pdf'))
+    expect(part).toBeTruthy()
+    const body = part!.split(/\r?\n\r?\n/).slice(1).join('\n').replace(/\s+/g, '')
+    expect(Buffer.from(body, 'base64')).toEqual(pdf)
+  })
+
+  test('plain body without attachments is not multipart/mixed', () => {
+    const encoded = buildGmailMimeMessage({
+      to: [{ email: 'recipient@example.test' }],
+      subject: 'Hi',
+      body: 'No files',
+      fromEmail: 'me@example.com',
+    })
+    const mime = decodeGmailRaw(encoded)
+    expect(mime).toContain('text/plain')
+    expect(mime).not.toContain('multipart/mixed')
+    expect(mime).toContain('No files')
   })
 })
