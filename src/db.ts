@@ -29,7 +29,7 @@ let sqliteInstance: DatabaseSync | null = null
 let dbInstance: ZeleDb | null = null
 
 function createDb(client: DatabaseSync) {
-  return drizzle({ client, schema, relations: schema.relations })
+  return drizzle({ client, relations: schema.relations })
 }
 
 /** Get the singleton Drizzle client. Creates ~/.zele and applies schema.sql on first call. */

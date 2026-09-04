@@ -9,7 +9,7 @@
 // When account is not provided (bootstrap/login flow), cache is skipped entirely.
 
 import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail'
-import type { OAuth2Client } from 'google-auth-library'
+import type { OAuth2Client } from 'googleapis-common'
 import { createMimeMessage } from 'mimetext'
 import { parseFrom, parseAddressList, resolveReplyRecipients, replySubject, threadAnchor, checkThreadLatestSeen, type SentInThread, type ThreadReplyEnvelope } from './email-utils.js'
 import * as errore from 'errore'
@@ -1655,7 +1655,7 @@ export class GmailClient {
       }
     }
 
-    const latest = messages.findLast((m) => !m.isDraft) ?? messages[messages.length - 1]!
+    const latest = threadAnchor(messages) ?? messages[messages.length - 1]!
     const allLabels = [...new Set(messages.flatMap((m) => m.labelIds))]
 
     return {
@@ -1756,7 +1756,7 @@ export class GmailClient {
         msg.payload?.headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? null
 
       // Find most recent message NOT from the user
-      const otherPartyMsg = nonDraftMessages.findLast((m) => !m.labelIds?.includes('SENT'))
+      const otherPartyMsg = [...nonDraftMessages].reverse().find((m) => !m.labelIds?.includes('SENT'))
       if (otherPartyMsg) {
         const fromHeader = getMsgHeader(otherPartyMsg, 'from')
         if (fromHeader) displayFrom = parseFrom(fromHeader)

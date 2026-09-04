@@ -5,7 +5,16 @@
 // and helpers to get authenticated GmailClient / ImapSmtpClient instances.
 // app_id is the OAuth client ID used during login (Google) or `imap_smtp`.
 
-import { OAuth2Client, type Credentials } from 'google-auth-library'
+import { OAuth2Client } from 'googleapis-common'
+
+type GoogleTokens = {
+  access_token?: string | null
+  refresh_token?: string | null
+  expiry_date?: number | null
+  token_type?: string | null
+  id_token?: string | null
+  scope?: string
+}
 import { colors as pc } from 'goke'
 import * as orm from 'drizzle-orm'
 import { getDb, schema } from './db.js'
@@ -612,7 +621,7 @@ async function authenticateAccount(account: AccountId): Promise<OAuth2Client> {
     throw new Error(`No account found for ${account.email}. Run: zele login`)
   }
 
-  const tokens: Credentials = JSON.parse(row.tokens)
+  const tokens: GoogleTokens = JSON.parse(row.tokens)
   const oauth2Client = createOAuth2Client(account.appId)
   oauth2Client.setCredentials(tokens)
 
@@ -813,7 +822,7 @@ export async function getAuthStatuses(): Promise<AuthStatus[]> {
     const accountType = row.accountType as AccountType
     const capabilities = parseCapabilities(row.capabilities)
     if (accountType === 'google') {
-      const tokens: Credentials = JSON.parse(row.tokens)
+      const tokens: GoogleTokens = JSON.parse(row.tokens)
       return {
         email: row.email,
         appId: row.appId,

@@ -6,8 +6,10 @@
 // Threading: each IMAP message is treated as a single-message "thread"
 // with threadId = "folder:uid" (e.g. "INBOX:12345").
 
+import { randomUUID } from 'node:crypto'
 import { ImapFlow, type FetchMessageObject, type MessageEnvelopeObject, type MailboxObject } from 'imapflow'
 import type { Transporter } from 'nodemailer'
+import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js'
 import { createMimeMessage } from 'mimetext'
 import * as errore from 'errore'
 import { AuthError, ApiError, UnsupportedError, EmptyThreadError, NotFoundError, SelfRecipientError, AmbiguousRecipientError, UnseenLatestError, mapConcurrent, withRetry, abortableSleep } from './api-utils.js'
@@ -146,7 +148,7 @@ function imapBoundary<T>(email: string, fn: () => Promise<T>) {
 export class ImapSmtpClient {
   private account: AccountId
   private loadCredentials: () => Promise<ImapSmtpCredentials | AuthError>
-  private smtpTransporter: Transporter | null = null
+  private smtpTransporter: Transporter<SMTPTransport.SentMessageInfo> | null = null
   private smtpAccessToken: string | undefined
 
   constructor({
@@ -235,7 +237,7 @@ export class ImapSmtpClient {
     return result
   }
 
-  private async getSmtpTransporter(): Promise<Transporter | UnsupportedError | AuthError> {
+  private async getSmtpTransporter(): Promise<Transporter<SMTPTransport.SentMessageInfo> | UnsupportedError | AuthError> {
     const creds = await this.loadCredentials()
     if (creds instanceof Error) return creds
     if (!creds.smtp) return new UnsupportedError({ feature: 'Sending email', accountType: 'IMAP-only', hint: 'Add SMTP with: zele login imap --email ... --smtp-host ...' })
@@ -557,9 +559,13 @@ export class ImapSmtpClient {
     const bccHeader = bcc && bcc.length > 0
       ? bcc.map((r) => r.name ? `"${r.name}" <${r.email}>` : r.email).join(', ')
       : undefined
+    const domain = fromEmail.split('@')[1] || 'localhost'
+    const messageId = `<${randomUUID()}@${domain}>`
 
     // One MIME buffer for SMTP DATA and IMAP Sent APPEND. Do not rebuild a
     // text/plain fallback: that path dropped --attach files.
+    // sendMail({ raw }) invents a wrapper Message-ID, so we mint ours and
+    // return that instead of info.messageId.
     const rawMime = await buildOutgoingMime({
       from: fromEmail,
       to: toHeader,
@@ -570,20 +576,24 @@ export class ImapSmtpClient {
       inReplyTo,
       references,
       attachments,
+      messageId,
     })
     if (rawMime instanceof Error) return rawMime
 
-    const sendResult = await transporter.sendMail({
-      envelope: {
-        from: fromEmail,
-        to: [
-          ...to.map((r) => r.email),
-          ...(cc ?? []).map((r) => r.email),
-          ...(bcc ?? []).map((r) => r.email),
-        ],
-      },
-      raw: rawMime,
-    }).catch((e) => new ApiError({ reason: `SMTP send failed: ${String(e)}`, cause: e }))
+    const sendResult = await errore.tryAsync({
+      try: () => transporter.sendMail({
+        envelope: {
+          from: fromEmail,
+          to: [
+            ...to.map((r) => r.email),
+            ...(cc ?? []).map((r) => r.email),
+            ...(bcc ?? []).map((r) => r.email),
+          ],
+        },
+        raw: rawMime,
+      }),
+      catch: (err) => new ApiError({ reason: `SMTP send failed: ${String(err)}`, cause: err }),
+    })
     if (sendResult instanceof Error) return sendResult
 
     const imapCreds = await this.loadCredentials()
@@ -598,7 +608,7 @@ export class ImapSmtpClient {
     }
 
     return {
-      id: sendResult.messageId ?? 'unknown',
+      id: messageId,
       threadId: 'unknown',
       labelIds: ['SENT'],
     }

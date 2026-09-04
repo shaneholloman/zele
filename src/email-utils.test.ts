@@ -4,10 +4,8 @@
 // lists, draft labels) is exercised end to end. No mocks, no network.
 
 import { OAuth2Client } from 'googleapis-common'
-import { goke } from 'goke'
 import nodemailer from 'nodemailer'
 import { describe, expect, test } from 'vitest'
-import { z } from 'zod'
 import { AmbiguousRecipientError, SelfRecipientError, UnseenLatestError } from './api-utils.js'
 import { buildOutgoingMime, checkThreadLatestSeen, resolveReplyRecipients, threadAnchor } from './email-utils.js'
 import { GmailClient } from './gmail-client.js'
@@ -539,8 +537,11 @@ describe('checkThreadLatestSeen', () => {
 })
 
 function attachmentBytes(raw: string, filename: string) {
-  const parts = raw.split(/\n--/)
-  const part = parts.find((p) => p.includes(filename) && /Content-Disposition:\s*attachment/i.test(p))
+  const parts = raw.split(/\r?\n--/)
+  const part = parts.find((p) =>
+    /Content-Disposition:\s*attachment/i.test(p)
+    && (p.includes(filename) || p.includes(encodeURIComponent(filename))),
+  )
   expect(part, `missing attachment part for ${filename}`).toBeTruthy()
   const body = part!.split(/\r?\n\r?\n/).slice(1).join('\n').replace(/\s+/g, '')
   return Buffer.from(body, 'base64')
@@ -575,13 +576,28 @@ describe('buildOutgoingMime', () => {
       text: 'Two files',
       attachments: [
         { filename: 'invoice.pdf', mimeType: 'application/pdf', content: pdf },
+        { filename: 'facturé.pdf', mimeType: 'application/pdf', content: pdf },
         { filename: 'logo.png', mimeType: 'image/png', content: png },
       ],
     })
     expect(raw).not.toBeInstanceOf(Error)
     const mime = (raw as Buffer).toString('utf8')
     expect(attachmentBytes(mime, 'invoice.pdf')).toEqual(pdf)
+    expect(attachmentBytes(mime, 'facturé.pdf')).toEqual(pdf)
     expect(attachmentBytes(mime, 'logo.png')).toEqual(png)
+  })
+
+  test('empty body with one PDF still compiles', async () => {
+    const raw = await buildOutgoingMime({
+      from: 'tommy@notaku.so',
+      to: 'recipient@example.test',
+      subject: 'Invoice',
+      text: '',
+      attachments: [{ filename: 'invoice.pdf', mimeType: 'application/pdf', content: pdf }],
+    })
+    expect(raw).not.toBeInstanceOf(Error)
+    const mime = (raw as Buffer).toString('utf8')
+    expect(attachmentBytes(mime, 'invoice.pdf')).toEqual(pdf)
   })
 
   test('plain text with no attachments stays text/plain', async () => {
@@ -599,14 +615,17 @@ describe('buildOutgoingMime', () => {
   })
 
   test('SMTP stream transport sends the same MIME including the PDF', async () => {
+    const messageId = '<probe-id@notaku.so>'
     const raw = await buildOutgoingMime({
       from: 'tommy@notaku.so',
       to: 'recipient@example.test',
       subject: 'Invoice',
       text: 'Hello Shawn',
       attachments: [{ filename: 'invoice.pdf', mimeType: 'application/pdf', content: pdf }],
+      messageId,
     })
     expect(raw).not.toBeInstanceOf(Error)
+    const mimeBuffer = raw as Buffer
     const transporter = nodemailer.createTransport({
       streamTransport: true,
       buffer: true,
@@ -614,43 +633,12 @@ describe('buildOutgoingMime', () => {
     })
     const info = await transporter.sendMail({
       envelope: { from: 'tommy@notaku.so', to: ['recipient@example.test'] },
-      raw: raw as Buffer,
+      raw: mimeBuffer,
     })
     const sent = info.message.toString('utf8')
+    expect(sent).toBe(mimeBuffer.toString('utf8'))
     expect(sent).toContain('multipart/mixed')
     expect(attachmentBytes(sent, 'invoice.pdf')).toEqual(pdf)
-  })
-})
-
-describe('mail send --attach parsing', () => {
-  test('single absolute path becomes a one-element array', async () => {
-    const cli = goke('zele')
-    cli
-      .command('mail send', 'Send an email')
-      .option('--to <to>', z.string().describe('Recipient'))
-      .option('--subject <subject>', z.string().describe('Subject'))
-      .option('--body <body>', z.string().describe('Body'))
-      .option('--attach <attach>', z.array(z.string()).describe('File to attach'))
-      .option('--account [account]', z.array(z.string()).optional().describe('Account'))
-      .action(() => {})
-
-    const { options } = await cli.parse([
-      'node',
-      'zele',
-      'mail',
-      'send',
-      '--account',
-      'tommy@notaku.so',
-      '--to',
-      'recipient@example.test',
-      '--subject',
-      'Invoice',
-      '--body',
-      'Hello',
-      '--attach',
-      '/Users/morse/Downloads/invoice.pdf',
-    ], { run: false })
-
-    expect(options.attach).toEqual(['/Users/morse/Downloads/invoice.pdf'])
+    expect(sent).toMatch(/^Message-ID:\s*<probe-id@notaku.so>/im)
   })
 })

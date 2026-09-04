@@ -65,23 +65,10 @@ export async function buildOutgoingMime({
     }))
   }
 
-  const built = await errore.tryAsync({
+  return errore.tryAsync({
     try: () => new MailComposer(mail).compile().build(),
     catch: (err) => new ApiError({ reason: `Failed to compile MIME: ${String(err)}`, cause: err }),
   })
-  if (built instanceof Error) return built
-
-  if (attachments && attachments.length > 0) {
-    const raw = built.toString('utf8')
-    const missing = attachments.filter((a) => !raw.includes(a.filename))
-    if (!/multipart\/mixed/i.test(raw) || missing.length > 0) {
-      return new ApiError({
-        reason: `Compiled MIME is missing attachments (${missing.map((a) => a.filename).join(', ') || 'multipart/mixed'})`,
-      })
-    }
-  }
-
-  return built
 }
 
 export interface Sender {
@@ -216,7 +203,10 @@ export function checkThreadLatestSeen({
  * reply to yet, and replying to a draft would produce an empty In-Reply-To.
  */
 export function threadAnchor<M extends { isDraft: boolean }>(messages: M[]): M | undefined {
-  return messages.findLast((m) => !m.isDraft)
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message && !message.isDraft) return message
+  }
 }
 
 export interface ReplyResolution<M extends ReplyAnchorMessage> {

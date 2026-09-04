@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.8.0
+
+1. **Importable mail SDK** — apps can list, read, reply, and mutate mail without spawning the CLI. `import 'zele'` now resolves to `dist/index.js`:
+
+   ```ts
+   import {
+     listMailThreads,
+     readMailThread,
+     messageToMarkdown,
+     archiveMail,
+     replyMail,
+   } from 'zele'
+
+   const listed = await listMailThreads({ folder: 'inbox', limit: 20 })
+   if (listed instanceof Error) throw listed
+
+   const first = listed.threads[0]
+   const thread = await readMailThread({
+     threadId: first.id,
+     account: first.account,
+   })
+   if (thread instanceof Error) throw thread
+
+   console.log(messageToMarkdown(thread.messages[0]))
+   ```
+
+   The same module also exports `starMail`, `unstarMail`, `trashMail`, `markMailRead`, `markMailUnread`, `getMailAttachment`, plus `listAccounts` and `getClients` for the lower-level Gmail and IMAP clients. Functions return `Error | T` instead of throwing.
+
+2. **IMAP/SMTP `--attach` now survives send** — `--attach` already reached SMTP, but the Sent-folder copy fell back to a plain-text RFC 822 body because `MailComposer` is not a public nodemailer export. Zele now compiles one MIME buffer with `nodemailer/lib/mail-composer` and uses that buffer for both SMTP DATA and IMAP Sent APPEND:
+
+   ```bash
+   zele mail send --account you@example.com --to peer@example.com \
+     --subject 'Invoice' --body 'Attached.' --attach ./invoice.pdf
+   ```
+
 ## 0.7.0
 
 1. **Microsoft OAuth for Outlook, Hotmail, and Microsoft 365** — connect Microsoft accounts without an app password:

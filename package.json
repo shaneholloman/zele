@@ -1,10 +1,26 @@
 {
   "name": "zele",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Email & Calendar CLI — Gmail, IMAP/SMTP, Google Calendar from your terminal",
   "type": "module",
-  "main": "dist/cli.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": "./dist/cli.js",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./src": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": {
+      "types": "./src/*.ts",
+      "default": "./src/*.ts"
+    }
+  },
   "scripts": {
     "build": "rm -rf dist && bun run tsc",
     "prepublishOnly": "bun run build",
